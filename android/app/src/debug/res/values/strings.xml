@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Debug builds sit NEXT TO the prod install (applicationId ".debug" suffix), so the two
+         must not share a name: this one reads "NOOP Dev" under the icon. -->
+    <string name="app_name" translatable="false">NOOP Dev</string>
+</resources>
