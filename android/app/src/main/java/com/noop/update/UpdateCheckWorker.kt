@@ -31,9 +31,9 @@ class UpdateCheckWorker(
 
     override suspend fun doWork(): Result {
         val ctx = applicationContext
-        val token = UpdateTokenStore.token(ctx) ?: return Result.success()
+        if (!BuildConfig.ENABLE_SELF_UPDATE || !UpdateWatch.isEnabled(ctx)) return Result.success()
 
-        val fetched = PrivateReleaseClient().fetchManifest(token)
+        val fetched = PublicReleaseClient().fetchManifest()
         if (fetched !is FetchResult.Ok) return Result.success()
 
         val decision = UpdateDecision.of(fetched.manifest, BuildConfig.VERSION_CODE)

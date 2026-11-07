@@ -1,0 +1,60 @@
+# Compile-and-test verification for the Android app.
+#
+# Debug build only, with unit tests. There is intentionally no signing config,
+# no keystore, no secrets, and no artifact publishing here: release APKs are
+# built and signed by hand. A debug build falls back to the Android debug key
+# automatically, so this job needs nothing from the repository owner to pass.
+name: Android CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v5
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Build debug APK
+        run: |
+          set +e
+          ./gradlew assembleFullDebug 2>&1 | tee "$RUNNER_TEMP/android-build.log"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            printf '```text\n' >> "$GITHUB_STEP_SUMMARY"
+            tail -n 250 "$RUNNER_TEMP/android-build.log" >> "$GITHUB_STEP_SUMMARY"
+            printf '\n```\n' >> "$GITHUB_STEP_SUMMARY"
+            message=$(grep -E '(^e: |error:|FAILURE:|What went wrong:|^> |Execution failed for task|Caused by:|Could not|Unresolved reference|Duplicate class)' "$RUNNER_TEMP/android-build.log" | tail -n 40 | tr '\n' '|' | sed 's/|$//')
+            echo "::error title=Android build failed::$message"
+          fi
+          exit "$status"
+
+      - name: Run unit tests
+        run: ./gradlew testFullDebugUnitTest

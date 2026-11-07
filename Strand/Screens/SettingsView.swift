@@ -2564,7 +2564,7 @@ struct SettingsView: View {
                 }
 
                 // Project home — NOOP's code, releases, issues and wiki live on GitHub.
-                Link(destination: URL(string: "https://github.com/ronboger/noop")!) {
+                Link(destination: URL(string: "https://github.com/ronboger/noop-public")!) {
                     HStack(spacing: 10) {
                         Image(systemName: "chevron.left.forwardslash.chevron.right")
                             .foregroundStyle(StrandPalette.accent)

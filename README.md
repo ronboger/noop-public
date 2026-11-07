@@ -2,7 +2,9 @@
 
 NOOP is an on-device wearable companion for WHOOP straps, with experimental support for other devices. It stores wearable data locally and computes sleep, recovery, and strain on the device.
 
-This source snapshot is based on NOOP 11.10.2. It includes the Android, macOS, iOS, and watchOS app source. The private test corpus, device captures, research artifacts, and signed distributions are excluded.
+This is the working repository for NOOP. It includes the Android, macOS, iOS, and watchOS app source. The private test corpus, device captures, research artifacts, and signed distributions are excluded.
+
+Signed Android updates are available from [GitHub Releases](https://github.com/ronboger/noop-public/releases/latest). Starting with 11.10.3, NOOP checks these releases without a GitHub token.
 
 ## Build from source
 

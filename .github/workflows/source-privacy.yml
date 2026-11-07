@@ -1,0 +1,27 @@
+name: Source privacy checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check tracked files
+        run: |
+          set -euo pipefail
+          if git ls-files | grep -Ei '(^|/)(captures?|exports?|evidence|research|reviews|dist)/|\.(btsnoop|pcapng?|noopbak|sqlite3?|db|edf|fit|gpx|apk|ipa|keystore|jks|p12|pem)$'; then
+            echo "Unexpected capture, personal-data, or signing file."
+            exit 1
+          fi
+          if git grep -IlEi 'ronboger[[:space:]]*@[[:space:]]*gmail[.]com|/Users/[r]onboger/|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|ghp_[a-z0-9]{30,}|github_pat_[a-z0-9_]{30,}'; then
+            echo "Review the reported files for identifying information or credentials."
+            exit 1
+          fi

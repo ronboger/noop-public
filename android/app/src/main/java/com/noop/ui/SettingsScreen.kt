@@ -114,7 +114,6 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -145,12 +144,11 @@ import com.noop.testcentre.TestDomain
 import com.noop.update.ApkInstaller
 import com.noop.update.ApkVerifier
 import com.noop.update.FetchResult
-import com.noop.update.PrivateReleaseClient
+import com.noop.update.PublicReleaseClient
 import com.noop.update.UpdateCheck
 import com.noop.update.UpdateDecision
 import com.noop.update.UpdateError
 import com.noop.update.UpdateScheduler
-import com.noop.update.UpdateTokenStore
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -3398,61 +3396,12 @@ fun SettingsScreen(
                 var autoCheck by remember {
                     mutableStateOf(com.noop.update.UpdateWatch.isEnabled(context))
                 }
-                var privateState by remember { mutableStateOf<UpdateDecision?>(null) }
-                var privateError by remember { mutableStateOf<String?>(null) }
-                var apkAssetId by remember { mutableStateOf(-1L) }
+                var releaseState by remember { mutableStateOf<UpdateDecision?>(null) }
+                var releaseError by remember { mutableStateOf<String?>(null) }
+                var apkUrl by remember { mutableStateOf("") }
                 var downloading by remember { mutableStateOf(false) }
                 var downloadPct by remember { mutableStateOf(0) }
-                // Private-release updates (fullRelease only). With a token stored, "Check for updates"
-                // reads THIS fork's private releases and can install them in place; without one it
-                // falls back to the public upstream check below.
-                var tokenInput by remember { mutableStateOf("") }
-                var hasToken by remember { mutableStateOf(UpdateTokenStore.hasToken(context)) }
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (BuildConfig.ENABLE_SELF_UPDATE) {
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(
-                                if (hasToken) "Private updates are on."
-                                else "Add a GitHub token to get private releases on this phone.",
-                                style = NoopType.body, color = Palette.textPrimary,
-                            )
-                            Text(
-                                "A fine-grained token scoped to ronboger/noop with Contents: Read-only. " +
-                                    "Stored encrypted on this device.",
-                                style = NoopType.caption, color = Palette.textTertiary,
-                            )
-                            if (hasToken) {
-                                OutlinedButton(
-                                    onClick = {
-                                        UpdateTokenStore.clear(context)
-                                        UpdateScheduler.cancel(context)
-                                        hasToken = false
-                                    },
-                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Palette.accent),
-                                ) { Text("Remove token", style = NoopType.captionNumber) }
-                            } else {
-                                OutlinedTextField(
-                                    value = tokenInput,
-                                    onValueChange = { tokenInput = it },
-                                    label = { Text("GitHub token") },
-                                    singleLine = true,
-                                    visualTransformation = PasswordVisualTransformation(),
-                                    modifier = Modifier.fillMaxWidth(),
-                                )
-                                OutlinedButton(
-                                    onClick = {
-                                        if (tokenInput.isNotBlank()) {
-                                            UpdateTokenStore.save(context, tokenInput)
-                                            tokenInput = ""
-                                            hasToken = true
-                                            UpdateScheduler.reschedule(context)
-                                        }
-                                    },
-                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Palette.accent),
-                                ) { Text("Save token", style = NoopType.captionNumber) }
-                            }
-                        }
-                    }
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -3463,20 +3412,19 @@ fun SettingsScreen(
                                     updChecking = true
                                     updResult = null
                                     scope.launch {
-                                        val token = UpdateTokenStore.token(context)
-                                        if (BuildConfig.ENABLE_SELF_UPDATE && token != null) {
-                                            privateError = null
+                                        if (BuildConfig.ENABLE_SELF_UPDATE) {
+                                            releaseError = null
                                             when (val r = withContext(Dispatchers.IO) {
-                                                PrivateReleaseClient().fetchManifest(token)
+                                                PublicReleaseClient().fetchManifest()
                                             }) {
                                                 is FetchResult.Ok -> {
-                                                    apkAssetId = r.apkAssetId
-                                                    privateState =
+                                                    apkUrl = r.apkUrl
+                                                    releaseState =
                                                         UpdateDecision.of(r.manifest, BuildConfig.VERSION_CODE)
                                                 }
                                                 is FetchResult.Error -> {
-                                                    privateState = null
-                                                    privateError = messageFor(r.kind)
+                                                    releaseState = null
+                                                    releaseError = messageFor(r.kind)
                                                 }
                                             }
                                         } else {
@@ -3539,6 +3487,7 @@ fun SettingsScreen(
                             onCheckedChange = {
                                 autoCheck = it
                                 com.noop.update.UpdateWatch.setEnabled(context, it)
+                                UpdateScheduler.reschedule(context)
                             },
                             colors = SwitchDefaults.colors(
                                 checkedThumbColor = Palette.surfaceBase,
@@ -3588,16 +3537,16 @@ fun SettingsScreen(
                         }
                     }
 
-                    privateError?.let {
+                    releaseError?.let {
                         Text(it, style = NoopType.footnote, color = Palette.statusWarning)
                     }
-                    (privateState as? UpdateDecision.UpToDate)?.let {
+                    (releaseState as? UpdateDecision.UpToDate)?.let {
                         Text(
                             "You're on the latest (${it.versionName}).",
                             style = NoopType.footnote, color = Palette.textSecondary,
                         )
                     }
-                    (privateState as? UpdateDecision.Available)?.let { avail ->
+                    (releaseState as? UpdateDecision.Available)?.let { avail ->
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -3635,10 +3584,9 @@ fun SettingsScreen(
                                             context.startActivity(ApkInstaller.unknownSourcesIntent(context))
                                             return@onClick
                                         }
-                                        val token = UpdateTokenStore.token(context) ?: return@onClick
                                         downloading = true
                                         downloadPct = 0
-                                        privateError = null
+                                        releaseError = null
                                         scope.launch {
                                             val dir = File(context.cacheDir, "updates").apply { mkdirs() }
                                             // Sweep stale APKs: the cache is disposable and must never
@@ -3646,21 +3594,21 @@ fun SettingsScreen(
                                             dir.listFiles()?.forEach { it.delete() }
                                             val dest = File(dir, avail.manifest.apk)
                                             val ok = withContext(Dispatchers.IO) {
-                                                PrivateReleaseClient().downloadAsset(
-                                                    token, apkAssetId, dest,
+                                                PublicReleaseClient().downloadAsset(
+                                                    apkUrl, dest,
                                                 ) { bytes, total ->
                                                     if (total > 0) downloadPct = ((bytes * 100) / total).toInt()
                                                 }
                                             }
                                             downloading = false
                                             when {
-                                                !ok -> privateError = "Couldn't reach GitHub."
+                                                !ok -> releaseError = "Couldn't reach GitHub."
                                                 !ApkVerifier.matches(dest, avail.manifest.sha256) -> {
                                                     dest.delete()
-                                                    privateError = "Download was corrupt."
+                                                    releaseError = "Download was corrupt."
                                                 }
                                                 !ApkInstaller.install(context, dest) ->
-                                                    privateError = "Android refused to start the install."
+                                                    releaseError = "Android refused to start the install."
                                             }
                                         }
                                     },
@@ -4179,11 +4127,8 @@ private fun BackgroundRecentThumb(
 /** One actionable sentence per failure mode (spec §6). "Couldn't determine" is deliberately NOT
  *  reported as "up to date" — that would strand the user on an old build. */
 private fun messageFor(kind: UpdateError): String = when (kind) {
-    UpdateError.NO_TOKEN -> "Enter a GitHub token to check for updates."
-    UpdateError.UNAUTHORIZED -> "Token rejected. It may have expired — add a new one."
     UpdateError.RATE_LIMITED -> "GitHub rate limit reached. Try again later."
-    UpdateError.FORBIDDEN -> "Token lacks access to this repository."
-    UpdateError.NOT_FOUND -> "Release not found. Check the token's repository scope."
+    UpdateError.NOT_FOUND -> "Release not found."
     UpdateError.NO_MANIFEST -> "Couldn't determine the latest version."
     UpdateError.NETWORK -> "Couldn't reach GitHub."
 }

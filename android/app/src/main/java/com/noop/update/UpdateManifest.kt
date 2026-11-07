@@ -4,8 +4,7 @@ import org.json.JSONObject
 import java.io.File
 
 /**
- * The `latest-android.json` asset that `Tools/publish-private-android-release.sh` attaches to every
- * private release. It exists so the phone can compare [versionCode] — the value Android itself uses
+ * The `latest-android.json` asset attached to each signed Android release. It exists so the phone can compare [versionCode] — the value Android itself uses
  * to decide whether an APK is an upgrade — instead of parsing a tag and doing semver arithmetic.
  */
 data class UpdateManifest(
