@@ -860,9 +860,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             analyzeKick.trySend(Unit)
         }
         override fun onActivityCreated(activity: android.app.Activity, savedInstanceState: android.os.Bundle?) {}
-        override fun onActivityStarted(activity: android.app.Activity) {}
+        override fun onActivityStarted(activity: android.app.Activity) { onAppVisibilityChanged(true) }
         override fun onActivityPaused(activity: android.app.Activity) {}
-        override fun onActivityStopped(activity: android.app.Activity) {}
+        override fun onActivityStopped(activity: android.app.Activity) { onAppVisibilityChanged(false) }
         override fun onActivitySaveInstanceState(activity: android.app.Activity, outState: android.os.Bundle) {}
         override fun onActivityDestroyed(activity: android.app.Activity) {}
     }
@@ -1348,6 +1348,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // stream armed once bonded (the reconciler arms it post-bond). Only effective with background
         // connection on — without it there's nothing keeping the link up to stream over, so a continuous
         // want would be meaningless. Pushed BEFORE autoReconnectOnLaunch so a launch reconnect arms it.
+        // Phone-battery protect goes FIRST, so a launch while the phone is in Battery Saver or low never
+        // briefly arms the stream and then releases it.
+        ble.setPhoneBatteryProtect(NoopPrefs.phoneBatteryProtect(appContext))
         ble.setKeepStreamForData(continuousHrvEffective())
 
         // #477: push the persisted Power-saving prefs so the battery-adaptive levers apply from launch.
@@ -1417,6 +1420,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun setPauseHrvOnPowerSave(enabled: Boolean) {
         NoopPrefs.setPauseHrvOnPowerSave(appContext, enabled)
         applyPowerSaving()
+    }
+
+    /** Flip "Protect phone battery" (Power saving screen). Persists + applies immediately. */
+    fun setPhoneBatteryProtect(enabled: Boolean) {
+        NoopPrefs.setPhoneBatteryProtect(appContext, enabled)
+        ble.setPhoneBatteryProtect(enabled)
     }
 
     /** Flip the experimental "Faster history sync" (#533). Persists + applies immediately, so the next
@@ -2696,21 +2705,54 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      *  on while ANY of them is visible, so navigating between them doesn't stop it (issue #18: leaving
      *  Live sent TOGGLE_REALTIME_HR=0, leaving Health Monitor with a frozen value). */
     private var realtimeWanters = 0
+    /** Wanters that must keep streaming with the app in the background: a live workout or session
+     *  recording runs with the screen locked. Every other live-HR screen (Live, Health, Breathe, HRV
+     *  snapshot) only counts while NOOP is visible. */
+    private var backgroundRealtimeWanters = 0
+    /** Whether a NOOP activity is started (visible). Driven by [salvageProbeLifecycleCallbacks]. */
+    private var startedActivities = 0
+    /** What the BLE client was last told, so start/stop go out only on an edge. */
+    private var realtimeRequested = false
 
-    /** A screen that shows live HR appeared. Arms the realtime stream on the 0→1 transition, and
-     *  blanks the stale smoothing window so a resume shows "—" until a fresh sample lands (#46).
-     *  Guarded on 0→1 so a second concurrent HR screen doesn't re-clear an already-live window. */
-    fun requestRealtimeHr() {
-        if (realtimeWanters++ == 0) {
+    /** Quiet background: a live-HR screen's DisposableEffect only releases when the screen leaves the
+     *  composition, NOT when the app goes to the background or the screen turns off. So a Health or Live
+     *  screen left open kept the strap streaming ~1 Hz all night. The stream is now wanted only while
+     *  such a screen is open AND NOOP is visible, or while a workout/session needs it. */
+    private fun reconcileRealtimeRequest() {
+        val want = backgroundRealtimeWanters > 0 || (realtimeWanters > 0 && startedActivities > 0)
+        if (want == realtimeRequested) return
+        realtimeRequested = want
+        if (want) {
             resetSmoothing()
             ble.startRealtime()
+        } else {
+            ble.stopRealtime()
         }
     }
 
-    /** A live-HR screen went away. Stops the realtime stream only when the last one leaves. */
-    fun releaseRealtimeHr() {
-        realtimeWanters = (realtimeWanters - 1).coerceAtLeast(0)
-        if (realtimeWanters == 0) ble.stopRealtime()
+    /** A screen that shows live HR appeared. Arms the realtime stream on the 0→1 transition, and
+     *  blanks the stale smoothing window so a resume shows "—" until a fresh sample lands (#46).
+     *  Guarded on the want edge so a second concurrent HR screen doesn't re-clear a live window.
+     *  [background] = keep streaming with the app backgrounded (live workouts and sessions only). */
+    fun requestRealtimeHr(background: Boolean = false) {
+        if (background) backgroundRealtimeWanters++ else realtimeWanters++
+        // A live-HR screen only composes while NOOP is on screen. If the lifecycle callbacks were
+        // registered after MainActivity's onStart, the count missed it: seed it here, and the next
+        // onActivityStopped brings it back to 0.
+        if (!background && startedActivities == 0) startedActivities = 1
+        reconcileRealtimeRequest()
+    }
+
+    /** A live-HR screen went away. Stops the realtime stream only when nothing still wants it. */
+    fun releaseRealtimeHr(background: Boolean = false) {
+        if (background) backgroundRealtimeWanters = (backgroundRealtimeWanters - 1).coerceAtLeast(0)
+        else realtimeWanters = (realtimeWanters - 1).coerceAtLeast(0)
+        reconcileRealtimeRequest()
+    }
+
+    private fun onAppVisibilityChanged(started: Boolean) {
+        startedActivities = (startedActivities + if (started) 1 else -1).coerceAtLeast(0)
+        reconcileRealtimeRequest()
     }
 
     /** Refresh the battery reading. Reads the standard 0x2A19 characteristic (works on 5/MG, where the

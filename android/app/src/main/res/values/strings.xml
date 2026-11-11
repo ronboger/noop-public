@@ -289,6 +289,10 @@
     <string name="power_saving_pct">%1$d%%</string>
     <string name="power_saving_hrv_pause">Pause HRV capture</string>
     <string name="power_saving_hrv_pause_desc">While your strap\'s battery is low, stop the always-on background HRV stream — the biggest continuous drain on the strap. A Live screen still shows heart rate, and it re-arms automatically once the strap is charged.</string>
+    <string name="phone_battery_protect_title">Phone battery</string>
+    <string name="phone_battery_protect_blurb">Stop NOOP from draining your phone overnight.</string>
+    <string name="phone_battery_protect">Protect phone battery</string>
+    <string name="phone_battery_protect_desc" formatted="false">While your phone is unplugged and in Battery Saver or at 20% or below, pause live heart-rate streaming from the strap. Your strap keeps recording, and the next sync fills the gap. A Live screen still shows heart rate. Streaming resumes when you plug in, leave Battery Saver, or reach 25%.</string>
 
     <!-- #453 generated Compose literal migration -->
     <string name="l10n_add_device_wizard_0123456789abcdef0123456789abcdef_b1775a78">0123456789abcdef0123456789abcdef</string>

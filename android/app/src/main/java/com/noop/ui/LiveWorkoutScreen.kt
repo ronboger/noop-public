@@ -77,8 +77,10 @@ fun LiveWorkoutScreen(vm: AppViewModel, onClose: () -> Unit) {
 
     // Keep the live HR stream on for the duration of the workout screen (ref-counted with Live/Health).
     DisposableEffect(Unit) {
-        vm.requestRealtimeHr()
-        onDispose { vm.releaseRealtimeHr() }
+        // background = true: a workout records with the screen locked, so it keeps the stream in the
+        // background, unlike the browse-only live screens.
+        vm.requestRealtimeHr(background = true)
+        onDispose { vm.releaseRealtimeHr(background = true) }
     }
 
     // Keep the screen awake while recording (#703). Opt-in, default off; the toggle lives in Settings.

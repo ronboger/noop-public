@@ -448,6 +448,22 @@ object NoopPrefs {
         of(context).edit().putBoolean(KEY_PAUSE_HRV_ON_POWER_SAVE, enabled).apply()
     }
 
+    /** "Protect phone battery": while the PHONE is unplugged and in Battery Saver or at/below 20%
+     *  (resumes at 25%), release the background realtime stream and unsubscribe plain HR, so the strap's
+     *  ~1 Hz notifications stop waking the phone. Unlike every other lever on the Power saving screen this
+     *  keys on the PHONE's battery, and it is NOT gated on the Power saving master. Default ON for new and
+     *  existing installs: it is a guardrail against a dead phone (and a missed morning alarm), and the
+     *  strap banks to flash meanwhile, so the next offload recovers the data. Drives
+     *  [com.noop.ble.WhoopBleClient.setPhoneBatteryProtect] via [AppViewModel]. */
+    const val KEY_PHONE_BATTERY_PROTECT = "noop.phoneBatteryProtect"
+
+    fun phoneBatteryProtect(context: Context): Boolean =
+        of(context).getBoolean(KEY_PHONE_BATTERY_PROTECT, true)
+
+    fun setPhoneBatteryProtect(context: Context, enabled: Boolean) {
+        of(context).edit().putBoolean(KEY_PHONE_BATTERY_PROTECT, enabled).apply()
+    }
+
     /** EXPERIMENTAL (#533): escalate the GATT connection interval to HIGH for the bounded historical
      *  offload burst, so a large backlog drains faster. Drives the SAFE half of #477's connection-priority
      *  management via [com.noop.ble.WhoopBleClient.setConnectionPriorityManagement]; the risky idle

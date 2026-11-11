@@ -176,6 +176,10 @@
     <string name="power_saving_pct">%1$d%%</string>
     <string name="power_saving_hrv_pause">Pausar captura de HRV</string>
     <string name="power_saving_hrv_pause_desc">Enquanto a bateria da tua bracelete estiver fraca, interrompa o fluxo HRV de fundo sempre ativo – o maior consumo contínuo da bracelete. Um ecrã em direto ainda mostra a frequência cardíaca e é reativado automaticamente assim que a bracelete é carregada.</string>
+    <string name="phone_battery_protect_title">Bateria do telemóvel</string>
+    <string name="phone_battery_protect_blurb">Impede que a NOOP esgote o telemóvel durante a noite.</string>
+    <string name="phone_battery_protect">Proteger a bateria do telemóvel</string>
+    <string name="phone_battery_protect_desc" formatted="false">Enquanto o telemóvel estiver desligado do carregador e em Poupança de bateria ou com 20% ou menos, a transmissão em direto da frequência cardíaca da pulseira é pausada. A pulseira continua a registar e a próxima sincronização preenche a falha. Um ecrã Ao vivo continua a mostrar a frequência cardíaca. A transmissão é retomada quando ligar o carregador, sair da Poupança de bateria ou chegar aos 25%.</string>
     <string name="l10n_add_device_wizard_0123456789abcdef0123456789abcdef_b1775a78">0123456789abcdef0123456789abcdef</string>
     <string name="l10n_add_device_wizard_a_whoop_strap_bonds_to_a_d39bdf4a">Uma correia WHOOP liga-se a um único dispositivo. Enquanto estiver ligado ao NOOP, não transmitirá to the official WHOOP app, and the other way round. It\'s reversible: pair it in the other app whenever you want it back.</string>
     <string name="l10n_add_device_wizard_add_61cc55aa">Adicionar</string>

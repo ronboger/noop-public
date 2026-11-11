@@ -176,6 +176,10 @@
     <string name="power_saving_pct">%1$d%%</string>
     <string name="power_saving_hrv_pause">Wstrzymaj przechwytywanie HRV</string>
     <string name="power_saving_hrv_pause_desc">Gdy bateria Twojego paska jest bliska wyczerpania, zatrzymaj zawsze włączony strumień HRV w tle — powoduje to największe ciągłe zużycie paska. Ekran na żywo nadal pokazuje tętno i ponownie się uzbraja po naładowaniu paska.</string>
+    <string name="phone_battery_protect_title">Bateria telefonu</string>
+    <string name="phone_battery_protect_blurb">Nie pozwala, by NOOP rozładował telefon w nocy.</string>
+    <string name="phone_battery_protect">Chroń baterię telefonu</string>
+    <string name="phone_battery_protect_desc" formatted="false">Gdy telefon nie jest podłączony do ładowania i działa w trybie oszczędzania baterii lub ma 20% lub mniej, przesyłanie tętna na żywo z opaski zostaje wstrzymane. Opaska nadal zapisuje dane, a następna synchronizacja uzupełni lukę. Ekran Na żywo nadal pokazuje tętno. Przesyłanie wznawia się po podłączeniu ładowarki, wyłączeniu oszczędzania baterii lub osiągnięciu 25%.</string>
     <string name="l10n_add_device_wizard_0123456789abcdef0123456789abcdef_b1775a78">0123456789abcdef0123456789abcdef</string>
     <string name="l10n_add_device_wizard_a_whoop_strap_bonds_to_a_d39bdf4a">Pasek WHOOP łączy się z jednym urządzeniem. Gdy jest podłączony do NOOP, nie będzie przesyłać strumieniowo to the official WHOOP app, and the other way round. It\'s reversible: pair it in the other app whenever you want it back.</string>
     <string name="l10n_add_device_wizard_add_61cc55aa">Dodać</string>

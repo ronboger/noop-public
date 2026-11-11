@@ -41,11 +41,48 @@ fun PowerSavingScreen(vm: AppViewModel) {
     var powerSavingBatteryPct by remember { mutableStateOf(NoopPrefs.powerSavingBatteryPct(context)) }
     var pauseHrvOnPowerSave by remember { mutableStateOf(NoopPrefs.pauseHrvOnPowerSave(context)) }
     var lowRefresh by remember { mutableStateOf(NoopPrefs.lowRefresh(context)) }
+    var phoneBatteryProtect by remember { mutableStateOf(NoopPrefs.phoneBatteryProtect(context)) }
 
     ScreenScaffold(
         title = stringResource(R.string.power_saving),
         subtitle = "Ease the load on your strap when its battery is running low.",
     ) {
+    // Phone-battery protect: the one lever here that keys on the PHONE's battery. Its own card, and NOT
+    // gated on the Power saving master below, so it is on by default for everyone.
+    SettingsCard(
+        icon = Icons.Filled.BatteryStd,
+        title = stringResource(R.string.phone_battery_protect_title),
+        blurb = stringResource(R.string.phone_battery_protect_blurb),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(stringResource(R.string.phone_battery_protect), style = NoopType.subhead, color = Palette.textPrimary)
+                Text(
+                    stringResource(R.string.phone_battery_protect_desc),
+                    style = NoopType.footnote,
+                    color = Palette.textTertiary,
+                )
+            }
+            Switch(
+                checked = phoneBatteryProtect,
+                onCheckedChange = {
+                    phoneBatteryProtect = it
+                    vm.setPhoneBatteryProtect(it)
+                },
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Palette.surfaceBase,
+                    checkedTrackColor = Palette.accent,
+                    uncheckedThumbColor = Palette.textSecondary,
+                    uncheckedTrackColor = Palette.surfaceInset,
+                    uncheckedBorderColor = Palette.hairline,
+                ),
+            )
+        }
+    }
     // #477 Power saving. Two BENIGN battery levers only: the offload-cadence stretch (%-gated) and
     // the HRV-capture pause (Battery-Saver-gated). The riskier connection-priority idle throttle is
     // deliberately not surfaced here — it stays dormant pending on-strap validation (#478).

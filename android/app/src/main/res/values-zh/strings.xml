@@ -173,6 +173,10 @@
     <string name="power_saving_pct">%1$d%%</string>
     <string name="power_saving_hrv_pause">低电量暂停 HRV 监测</string>
     <string name="power_saving_hrv_pause_desc">当手环电量偏低时，自动停止全天候的后台 HRV (心率变异性) 数据流——这是手环最耗电的功能。实时界面依然会显示心率，且手环充电后，HRV 监测会自动恢复。</string>
+    <string name="phone_battery_protect_title">手机电量</string>
+    <string name="phone_battery_protect_blurb">防止 NOOP 在夜间耗尽手机电量。</string>
+    <string name="phone_battery_protect">保护手机电量</string>
+    <string name="phone_battery_protect_desc" formatted="false">当手机未充电且处于省电模式或电量不高于 20% 时，暂停手环的实时心率流。手环会继续记录，下次同步会补齐数据。实时界面仍会显示心率。连接充电器、退出省电模式或电量达到 25% 后，实时流会自动恢复。</string>
     <string name="l10n_add_device_wizard_0123456789abcdef0123456789abcdef_b1775a78">0123456789abcdef0123456789abcdef</string>
     <string name="l10n_add_device_wizard_a_whoop_strap_bonds_to_a_d39bdf4a">WHOOP 手环会与单部手机绑定。要想在这里配对，您需要先在其他设备上解除它的绑定。 to the official WHOOP app, and the other way round. It\'s reversible: pair it in the other app whenever you want it back.</string>
     <string name="l10n_add_device_wizard_add_61cc55aa">添加</string>

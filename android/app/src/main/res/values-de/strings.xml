@@ -191,6 +191,10 @@
     <string name="power_saving_pct">%1$d %%</string>
     <string name="power_saving_hrv_pause">HFV-Erfassung pausieren</string>
     <string name="power_saving_hrv_pause_desc">Wenn der Akku deines Bandes niedrig ist, wird der dauerhafte HFV-Hintergrundstream gestoppt – der größte Dauerverbraucher am Band. Ein Live-Bildschirm zeigt weiterhin die Herzfrequenz an, und er wird automatisch reaktiviert, sobald das Band geladen ist.</string>
+    <string name="phone_battery_protect_title">Handy-Akku</string>
+    <string name="phone_battery_protect_blurb">Verhindert, dass NOOP dein Handy über Nacht leert.</string>
+    <string name="phone_battery_protect">Handy-Akku schützen</string>
+    <string name="phone_battery_protect_desc" formatted="false">Wenn dein Handy nicht lädt und im Energiesparmodus oder bei höchstens 20 % ist, wird das Live-Herzfrequenz-Streaming vom Band pausiert. Das Band zeichnet weiter auf, und die nächste Synchronisierung füllt die Lücke. Ein Live-Bildschirm zeigt weiterhin die Herzfrequenz an. Das Streaming läuft wieder, sobald du das Handy anschließt, den Energiesparmodus beendest oder 25 % erreichst.</string>
 
     <!-- #453 generated Compose literal migration -->
     <string name="l10n_add_device_wizard_0123456789abcdef0123456789abcdef_b1775a78">0123456789abcdef0123456789abcdef</string>

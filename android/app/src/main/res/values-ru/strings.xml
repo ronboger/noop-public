@@ -255,6 +255,10 @@
     <string name="power_saving_kick_in">Включать при (заряде браслета)</string>
     <string name="power_saving_hrv_pause">Приостановить сбор ВСР</string>
     <string name="power_saving_hrv_pause_desc">Пока заряд браслета низкий, останавливать постоянный фоновый поток ВСР — самый большой непрерывный расход для браслета. Живой экран по-прежнему показывает пульс, а поток включится сам, как только браслет зарядится.</string>
+    <string name="phone_battery_protect_title">Батарея телефона</string>
+    <string name="phone_battery_protect_blurb">Не даёт NOOP разряжать телефон за ночь.</string>
+    <string name="phone_battery_protect">Защита батареи телефона</string>
+    <string name="phone_battery_protect_desc" formatted="false">Когда телефон не заряжается и включён режим энергосбережения или заряд 20% и ниже, потоковая передача пульса с браслета в реальном времени приостанавливается. Браслет продолжает запись, а следующая синхронизация восполнит пробел. Экран «Live» по-прежнему показывает пульс. Передача возобновится, когда вы подключите зарядку, выключите энергосбережение или заряд достигнет 25%.</string>
     <string name="l10n_add_device_wizard_a_whoop_strap_bonds_to_a_d39bdf4a">Браслет WHOOP сопрягается только с одним устройством. Пока он подключён к NOOP, он не будет передавать to the official WHOOP app, and the other way round. It\'s reversible: pair it in the other app whenever you want it back.</string>
     <string name="l10n_add_device_wizard_add_61cc55aa">Добавить</string>
     <string name="l10n_add_device_wizard_advanced_i_already_have_my_ring_e87b9b49">Дополнительно: у меня уже есть ключ моего кольца</string>
