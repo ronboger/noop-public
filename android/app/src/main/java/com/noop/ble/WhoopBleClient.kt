@@ -2161,6 +2161,84 @@ class WhoopBleClient(
             if (!overnightOnly) return true
             return overnightWindowContains(minuteOfDay, startMin, endMin)
         }
+
+        // MARK: Phone-battery protect
+        //
+        // Measured on a Pixel 10: with Continuous HRV capture on, the strap's ~1 Hz BLE notifications woke
+        // the phone's application processor ~21,700 times between 01:00 and 07:30 (93% of all wakeups,
+        // reason `aoc_chre_bt_offload_data_rx`). The AP was awake 12 of 18 screen-off hours, idle drain
+        // was ~2.7%/h, and the phone died at 08:37 — with Battery Saver ON for the last 7 hours, because
+        // every existing power lever keys on the STRAP's battery, never the phone's. These helpers are the
+        // phone-side guardrail: while the PHONE is unplugged and in Battery Saver or low, release the
+        // background stream (TOGGLE_REALTIME_HR) AND unsubscribe plain HR (0x2A37), which a 5/MG keeps
+        // notifying even with the realtime toggle off. The strap keeps banking to flash, so the next
+        // offload recovers the night; a visible Live screen still gets HR on demand.
+
+        /** Pause at/below this PHONE battery % (unplugged). */
+        const val PHONE_PROTECT_PAUSE_PCT = 20
+        /** Resume at/above this PHONE battery %. The 5-point gap stops a dithering gauge (19↔20) from
+         *  toggling the stream and the CCCD on every reading. */
+        const val PHONE_PROTECT_RESUME_PCT = 25
+
+        /** Next value of the low-battery latch. Latches at/below [pauseAtPct], clears at/above
+         *  [resumeAtPct], holds in between. An unknown reading (pct < 0) holds the previous value. */
+        fun phoneLowLatched(
+            batteryPct: Int,
+            wasLatched: Boolean,
+            pauseAtPct: Int = PHONE_PROTECT_PAUSE_PCT,
+            resumeAtPct: Int = PHONE_PROTECT_RESUME_PCT,
+        ): Boolean = when {
+            batteryPct < 0 -> wasLatched
+            batteryPct <= pauseAtPct -> true
+            batteryPct >= resumeAtPct -> false
+            else -> wasLatched
+        }
+
+        /** Whether phone-battery protect is engaged. Power (any plug, including Pixel Adaptive Charging's
+         *  NOT_CHARGING hold) always wins — Battery Saver stays on while charging up to ~90%, and a phone
+         *  on the charger at bedtime should capture the night. */
+        fun phoneProtectActive(
+            enabled: Boolean,
+            powered: Boolean,
+            powerSaveMode: Boolean,
+            lowLatched: Boolean,
+        ): Boolean = enabled && !powered && (powerSaveMode || lowLatched)
+
+        /** Whether plain HR (0x2A37) notifications should be OFF: protect engaged AND no visible screen
+         *  wants live HR. A Live screen always overrides, so opening it while paused still shows bpm. */
+        fun standardHrSilenced(protectActive: Boolean, screenWantsRealtime: Boolean): Boolean =
+            protectActive && !screenWantsRealtime
+
+        /** Quiet background (the default): whether plain HR (0x2A37) should be OFF. It is ON only while
+         *  something actually consumes it in real time: a visible live screen or workout
+         *  ([screenWantsRealtime]), the user's Continuous HRV capture (unless phone protect overrides it),
+         *  or the smart alarm's wake window. Otherwise the strap banks HR to flash and the periodic history
+         *  offload brings it in, so the phone is not woken ~once a second all day. A 5/MG whose history
+         *  offload is known to come back empty ([historyEmpty], #580) keeps plain HR, because live HR is
+         *  then its only data source. */
+        fun quietStandardHr(
+            screenWantsRealtime: Boolean,
+            continuousCaptureWanted: Boolean,
+            protectActive: Boolean,
+            smartAlarmNeedsHr: Boolean,
+            historyEmpty: Boolean,
+        ): Boolean {
+            if (screenWantsRealtime || historyEmpty) return false
+            if (protectActive) return true
+            return !continuousCaptureWanted && !smartAlarmNeedsHr
+        }
+
+        /** Lead time before the smart-alarm wake window opens during which plain HR is kept on, so the
+         *  light-sleep watcher has a warmed-up HR feed when the window opens. */
+        const val SMART_ALARM_HR_LEAD_MS = 60L * 60_000L
+
+        /** Whether the smart alarm's light-sleep watcher needs live HR now: enabled, a deadline scheduled,
+         *  and [nowMs] inside [deadline - window - lead, deadline]. */
+        fun smartAlarmNeedsHr(enabled: Boolean, deadlineMs: Long, windowMinutes: Int, nowMs: Long): Boolean {
+            if (!enabled || deadlineMs <= 0L) return false
+            val opensAt = deadlineMs - windowMinutes * 60_000L - SMART_ALARM_HR_LEAD_MS
+            return nowMs in opensAt..deadlineMs
+        }
     }
 
     // MARK: Published state — the single source of truth the UI observes. Seeded with the PERSISTED
@@ -2504,6 +2582,135 @@ class WhoopBleClient(
     fun setLowRefreshMode(enabled: Boolean) {
         if (lowRefreshMode == enabled) return
         lowRefreshMode = enabled
+    }
+
+    // MARK: Phone-battery protect (instance side) — see the companion helpers for why this exists.
+    // All mutation happens on the main looper: the receiver is registered without a handler (so it runs
+    // on main), and [setPhoneBatteryProtect] re-posts itself onto main.
+
+    /** The "Protect phone battery" preference (default ON). */
+    @Volatile private var phoneProtectEnabled = false
+    /** Last PHONE battery reading from ACTION_BATTERY_CHANGED; -1 = unknown. */
+    @Volatile private var phoneBatteryPct = -1
+    /** Phone on any power source (EXTRA_PLUGGED != 0, or CHARGING/FULL). Unknown reads as powered so a
+     *  failed read can never pause anything. */
+    @Volatile private var phonePowered = true
+    @Volatile private var phonePowerSaveMode = false
+    /** [phoneLowLatched] hysteresis state. */
+    @Volatile private var phoneLowLatch = false
+    /** Cached [phoneProtectActive] result, so the receiver acts only on an edge. */
+    @Volatile private var phoneProtectEngaged = false
+    /** Desired 0x2A37 CCCD state (true = notifications OFF). [drainCccdQueue] reads it at write time,
+     *  so every subscribe path — connect, keep-alive resubscribe, this lever — writes the current want. */
+    @Volatile private var standardHrWantOff = false
+    /** What the last 0x2A37 CCCD write on this link set (true = OFF). Cleared in [reset]. */
+    @Volatile private var standardHrWrittenOff = false
+    private var phonePowerReceiverRegistered = false
+
+    private val phonePowerReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(c: Context?, intent: android.content.Intent?) {
+            if (intent?.action == android.content.Intent.ACTION_BATTERY_CHANGED) readPhoneBattery(intent)
+            phonePowerSaveMode = readPhonePowerSaveMode()
+            onPhonePowerChanged()
+        }
+    }
+
+    /** Turn the phone-battery protect on or off (the Power saving screen's "Protect phone battery").
+     *  Registers the ACTION_BATTERY_CHANGED + ACTION_POWER_SAVE_MODE_CHANGED receiver only while on, seeds
+     *  the state from the sticky battery intent, and reconciles at once. Call BEFORE
+     *  [setKeepStreamForData] at launch so a launch in Battery Saver never briefly arms the stream. */
+    fun setPhoneBatteryProtect(enabled: Boolean) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post { setPhoneBatteryProtect(enabled) }
+            return
+        }
+        phoneProtectEnabled = enabled
+        val app = context.applicationContext
+        if (enabled && !phonePowerReceiverRegistered) {
+            val filter = android.content.IntentFilter().apply {
+                addAction(android.content.Intent.ACTION_BATTERY_CHANGED)
+                addAction(android.os.PowerManager.ACTION_POWER_SAVE_MODE_CHANGED)
+            }
+            // Both actions are system broadcasts, which reach a NOT_EXPORTED receiver. Same pattern as
+            // NoopMotion's power-save receiver. A failed register leaves protect inert, never crashing.
+            runCatching {
+                ContextCompat.registerReceiver(app, phonePowerReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+            }.onSuccess { sticky ->
+                phonePowerReceiverRegistered = true
+                sticky?.let { readPhoneBattery(it) }
+            }.onFailure { log("Phone battery protect: receiver registration failed (${it.javaClass.simpleName})") }
+            phonePowerSaveMode = readPhonePowerSaveMode()
+        } else if (!enabled && phonePowerReceiverRegistered) {
+            runCatching { app.unregisterReceiver(phonePowerReceiver) }
+            phonePowerReceiverRegistered = false
+        }
+        onPhonePowerChanged()
+    }
+
+    private fun readPhoneBattery(i: android.content.Intent) {
+        val level = i.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1)
+        val scale = i.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, -1)
+        phoneBatteryPct = if (level >= 0 && scale > 0) level * 100 / scale else -1
+        val status = i.getIntExtra(android.os.BatteryManager.EXTRA_STATUS, -1)
+        // EXTRA_PLUGGED catches Pixel Adaptive Charging / the 80% limit, which report NOT_CHARGING while
+        // on the charger. Phone-on-charger must never pause.
+        phonePowered = i.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0) != 0 ||
+            status == android.os.BatteryManager.BATTERY_STATUS_CHARGING ||
+            status == android.os.BatteryManager.BATTERY_STATUS_FULL
+    }
+
+    private fun readPhonePowerSaveMode(): Boolean =
+        runCatching {
+            (context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager)?.isPowerSaveMode == true
+        }.getOrDefault(false)
+
+    /** Re-derive the protect state; act only on an edge. Engaging releases the background stream (via
+     *  [continuousCaptureWantsNow]) and plain HR (via [applyStandardHrSubscription], both inside
+     *  [reconcileRealtime]), and flushes the live buffers so no partial batch sits in RAM while paused. */
+    private fun onPhonePowerChanged() {
+        phoneLowLatch = phoneLowLatched(phoneBatteryPct, phoneLowLatch)
+        val active = phoneProtectActive(phoneProtectEnabled, phonePowered, phonePowerSaveMode, phoneLowLatch)
+        if (active == phoneProtectEngaged) return
+        phoneProtectEngaged = active
+        log(
+            "Phone battery protect: ${if (active) "ON" else "OFF"} (phone $phoneBatteryPct%, " +
+                "powered=$phonePowered, saver=$phonePowerSaveMode) — " +
+                if (active) "pausing the background stream and plain HR" else "resuming",
+        )
+        if (active) ioScope.launch { flushLive(); flushStandardHr() }
+        reconcileRealtime()
+    }
+
+    /** Bring the 0x2A37 CCCD in line with [standardHrSilenced]. Writes only on a mismatch with what this
+     *  link last wrote, and only on a bonded link: before the bond, plain HR must stay on (it is the 5/MG
+     *  fallback that marks the link established), and a drain-to-empty there would start the session
+     *  early. The first bonded keep-alive tick (it reconciles every 30 s) applies a pending OFF. */
+    private fun applyStandardHrSubscription() {
+        val alarm = runCatching { com.noop.alarm.SmartAlarmStore.from(context) }.getOrNull()
+        val off = quietStandardHr(
+            screenWantsRealtime = screenWantsRealtime,
+            continuousCaptureWanted = continuousCaptureWantsNow(),
+            protectActive = phoneProtectEngaged,
+            smartAlarmNeedsHr = alarm != null && smartAlarmNeedsHr(
+                alarm.enabled, alarm.scheduledDeadlineMs, alarm.windowMinutes, System.currentTimeMillis(),
+            ),
+            historyEmpty = connectedFamily == DeviceFamily.WHOOP5 && whoop5EmptyOffload.historyEmpty,
+        )
+        if (standardHrWantOff && !off) {
+            // Coming back from a deliberate quiet stretch: restart the liveness clock so the keep-alive
+            // does not read the pause as a stall and bounce a healthy link.
+            lastDataAtMs = System.currentTimeMillis()
+            resubscribedSinceData = false
+        }
+        standardHrWantOff = off
+        if (off == standardHrWrittenOff) return
+        val g = gatt ?: return
+        val s = _state.value
+        if (!s.connected || !s.bonded) return
+        g.getService(HEART_RATE_SERVICE)?.getCharacteristic(HEART_RATE_CHAR)?.let {
+            cccdQueue.add(it)
+            drainCccdQueue(g)
+        }
     }
 
     /** #477: pause BACKGROUND continuous-HRV capture while the STRAP's battery is low (own toggle,
@@ -9073,7 +9280,13 @@ class WhoopBleClient(
             // still thrashed on the 120s fuse (#1414). Widen to the whole 5/MG family; WHOOP 4 keeps 120s.
             // (`historyEmpty` still gates the battery-backfill interval — a separate concern, left as-is.)
             val bounceFuse = liveLinkStallFuseMs()
-            if (silentMs > bounceFuse) {
+            // Phone-battery protect: while plain HR is deliberately unsubscribed and the realtime stream is
+            // released, a 5/MG sends almost nothing, so "silence" is the intended state, not a stall.
+            // Bouncing would reconnect every fuse window (and kick a CONNECT offload) for the whole pause,
+            // and the quiet-resubscribe would turn HR back on. A genuinely dead link still drops at the
+            // BLE supervision timeout; [applyStandardHrSubscription] restarts the clock on resume.
+            val intentionallyQuiet = standardHrWantOff && standardHrWrittenOff && !wantsRealtime
+            if (silentMs > bounceFuse && !intentionallyQuiet) {
                 // Nothing for the fuse window — the live stream/link stalled. Bounce it: the auto-rescan on
                 // disconnect re-bonds and resumes streaming (the automatic version of the manual fix).
                 log("No data for ${silentMs / 1000}s — bouncing link to resume live stream")
@@ -9092,7 +9305,7 @@ class WhoopBleClient(
                 // but only ONCE per quiet episode. Re-subscribing all notify chars every 30s tick floods
                 // descriptor writes that collide with the command queue on a slow stack (#77); a single
                 // re-subscribe recovers a dropped CCCD, repeating it just adds congestion. Re-armed on data.
-                if (silentMs > KEEPALIVE_QUIET_MS && !resubscribedSinceData) {
+                if (silentMs > KEEPALIVE_QUIET_MS && !resubscribedSinceData && !intentionallyQuiet) {
                     resubscribedSinceData = true
                     enableLiveNotifications()
                 }
@@ -9260,6 +9473,10 @@ class WhoopBleClient(
      *  Mirrors the Swift `continuousCaptureWantsNow`. */
     private fun continuousCaptureWantsNow(): Boolean {
         if (!keepStreamForData) return false
+        // Phone-battery protect: the PHONE is unplugged and in Battery Saver or low. Release the background
+        // stream; the strap banks to flash and the next offload recovers the data. A Live screen still
+        // arms on demand (screenWantsRealtime is checked separately at every arm site).
+        if (phoneProtectEngaged) return false
         // #477: optional power-saving pause — while power saving is ACTIVE (battery ≤ threshold or Battery
         // Saver, discharging), release the held-open continuous-capture stream (its own toggle, default
         // off). Battery-%-aware like the offload/defer levers, via the shared idleThrottleActive gate. The
@@ -9305,6 +9522,9 @@ class WhoopBleClient(
             handler.post { reconcileRealtime() }
             return
         }
+        // Phone-battery protect also owns plain HR (0x2A37), which keeps notifying at ~1 Hz with the realtime
+        // toggle off. Run it on every reconcile so a Live screen opening or closing re-derives it too.
+        applyStandardHrSubscription()
         val want = screenWantsRealtime || continuousCaptureWantsNow()
         wantsRealtime = want   // the keep-alive + post-bond arm-on-connect read this derived value
         if (want == realtimeArmed) return                          // no edge — nothing to send
@@ -10314,8 +10534,18 @@ class WhoopBleClient(
         // Tell the local stack to surface notifications, then write the CCCD so the remote starts
         // sending them. CoreBluetooth's setNotifyValue(true) does both implicitly. Both are routed
         // through safeGatt so a dead binder (#314) tears down instead of crashing.
+        // Phone-battery protect: plain HR (0x2A37) is written OFF while [standardHrWantOff]. Read at write
+        // time so the connect drain, the keep-alive resubscribe and the protect lever all write the CURRENT
+        // want. Every other characteristic is always enabled, as before. NEVER before the bond: on a 5/MG the
+        // first plain-HR packet is the fallback that marks the link established (parseStandardHr), so the
+        // connect drain always enables it; the first bonded keep-alive reconcile then turns it off.
+        val enable = !(ch.uuid == HEART_RATE_CHAR && standardHrWantOff && _state.value.bonded)
+        if (ch.uuid == HEART_RATE_CHAR) {
+            standardHrWrittenOff = !enable
+            if (!enable) log("Phone battery protect: unsubscribing plain HR (0x2A37)")
+        }
         val notifyOk = safeGatt("setCharacteristicNotification") {
-            ops.setCharacteristicNotificationCompat(ch, true)
+            ops.setCharacteristicNotificationCompat(ch, enable)
         }
         if (!notifyOk && gatt == null) return   // safeGatt tore down — link is gone
         val cccd = ch.getDescriptor(CCCD)
@@ -10325,7 +10555,9 @@ class WhoopBleClient(
             drainCccdQueue(g)
             return
         }
-        val enableValue = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+        val enableValue =
+            if (enable) BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            else BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
         val ok = safeGatt("writeDescriptor") {
             ops.writeDescriptorCompat(cccd, enableValue)
         }
@@ -11859,6 +12091,8 @@ class WhoopBleClient(
     /** Clear per-connection state. Port of the flag resets in didConnect / didDisconnectPeripheral. */
     private fun reset() {
         didBond = false
+        // Phone-battery protect: a new link's connect drain writes 0x2A37 from [standardHrWantOff] itself.
+        standardHrWrittenOff = false
         explicitBondRequestedThisLink = false   // #1635: one createBond attempt per link
         sawBondTransitionThisLink = false
         // explicitBondRequestedAtMs is deliberately NOT cleared here. An OS pairing routinely completes

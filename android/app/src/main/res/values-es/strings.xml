@@ -1740,6 +1740,10 @@
     <string name="power_saving_pct">%1$d%%</string>
     <string name="power_saving_hrv_pause">Captura de HRV</string>
     <string name="power_saving_hrv_pause_desc">Mientras que la batería de tu correa\ es baja, detén el flujo de HRV de fondo siempre en el fondo, el mayor drenaje continuo en la correa. Una pantalla en vivo todavía muestra la frecuencia cardíaca, y re-armas automáticamente una vez que se carga la correa.</string>
+    <string name="phone_battery_protect_title">Batería del teléfono</string>
+    <string name="phone_battery_protect_blurb">Evita que NOOP agote tu teléfono durante la noche.</string>
+    <string name="phone_battery_protect">Proteger la batería del teléfono</string>
+    <string name="phone_battery_protect_desc" formatted="false">Mientras tu teléfono esté desconectado y en Ahorro de batería o al 20 % o menos, se pausa la transmisión en directo de la frecuencia cardiaca desde la banda. La banda sigue registrando y la próxima sincronización completa el hueco. Una pantalla en directo sigue mostrando la frecuencia cardiaca. La transmisión se reanuda al conectar el cargador, salir de Ahorro de batería o llegar al 25 %.</string>
     <!-- #453 data-driven metric labels that do not appear directly in Compose calls. -->
     <string name="timeline_metric_heart_rate">Frecuencia cardíaca</string>
     <string name="timeline_metric_rmssd">rMSSD (5 min)</string>

@@ -1758,6 +1758,10 @@
     <string name="power_saving_pct">%1$d%%</string>
     <string name="power_saving_hrv_pause">Capture de la VFC en pause</string>
     <string name="power_saving_hrv_pause_desc">Quand la batterie de votre bracelet est basse, arrêtez le flux de VFC en arrière-plan, ce qui sollicite le plus votre bracelet. Un écran Live affiche toujours la fréquence cardiaque, et il recommence automatiquement une fois le bracelet chargé.</string>
+    <string name="phone_battery_protect_title">Batterie du téléphone</string>
+    <string name="phone_battery_protect_blurb">Empêche NOOP de vider votre téléphone pendant la nuit.</string>
+    <string name="phone_battery_protect">Protéger la batterie du téléphone</string>
+    <string name="phone_battery_protect_desc" formatted="false">Lorsque votre téléphone est débranché et en mode Économiseur de batterie ou à 20 % ou moins, la diffusion en direct de la fréquence cardiaque depuis le bracelet est mise en pause. Le bracelet continue d\'enregistrer et la prochaine synchronisation comble le manque. Un écran Live affiche toujours la fréquence cardiaque. La diffusion reprend quand vous branchez le téléphone, quittez l\'Économiseur de batterie ou atteignez 25 %.</string>
     <!-- #453 data-driven metric labels that do not appear directly in Compose calls. -->
     <string name="timeline_metric_heart_rate">Fréquence cardiaque</string>
     <string name="timeline_metric_rmssd">rMSSD (5 min)</string>

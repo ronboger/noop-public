@@ -161,9 +161,16 @@ internal const val WHOOP5_RR_INTERVALS_SQL =
  * hides live intervals across the whole interval (#1118, #2335).
  *
  * Deliberately NOT `AS MATERIALIZED`, unlike the Swift twin. That hint needs SQLite 3.35 and `minSdk`
- * is 26, so it is a syntax error on most supported devices. The cost is that SQLite may re-evaluate
- * the hour choice per row, which is the quadratic read the Swift side names; do not "fix" the
- * asymmetry by adding the keyword.
+ * is 26, so it is a syntax error on most supported devices; do not add the keyword.
+ *
+ * Battery: the old form joined `rrInterval r JOIN whoop4HourChoice h ON h.hour = r.ts / 3600`. The
+ * hour-choice table has no index and `r.ts / 3600` is not indexable, so SQLite compared every R-R row in
+ * the window with every hour: rows x hours. On a phone with weeks of R-R it took ~3 s per call, and a
+ * cold rescore after every process start called it dozens of times, burning a full core for minutes.
+ * Now the hours drive the loop (CROSS JOIN fixes the order in SQLite) and each hour reads only its own
+ * rows through the `(deviceId, ts)` primary-key range. `ts >= hour * 3600 AND ts < (hour + 1) * 3600`
+ * is the same set as `ts / 3600 = hour` for non-negative integer seconds, and the outer `:from`/`:to`
+ * bounds, filters, ORDER BY and LIMIT are unchanged, so the rows returned are identical.
  */
 internal const val WHOOP4_RR_INTERVALS_SQL =
     "WITH whoop4HourChoice AS (" +
@@ -174,8 +181,9 @@ internal const val WHOOP4_RR_INTERVALS_SQL =
     "AND ts >= (:from / 3600) * 3600 AND ts < ((:to / 3600) + 1) * 3600 " +
     "AND (tsSuspect IS NULL OR tsSuspect <> 1) " +
     "AND (srcChannel IS NULL OR srcChannel IN (8, 9, 10)) GROUP BY ts / 3600) " +
-    "SELECT r.* FROM rrInterval r JOIN whoop4HourChoice h ON h.hour = r.ts / 3600 " +
-    "WHERE r.deviceId = :deviceId AND r.ts >= :from AND r.ts <= :to " +
+    "SELECT r.* FROM whoop4HourChoice h CROSS JOIN rrInterval r " +
+    "WHERE r.deviceId = :deviceId " +
+    "AND r.ts >= MAX(:from, h.hour * 3600) AND r.ts <= MIN(:to, h.hour * 3600 + 3599) " +
     "AND (r.srcChannel IS NULL OR r.srcChannel <> 2) " +
     "AND ((r.srcChannel = 8 AND h.sourceChoice = 1) " +
     "OR (r.srcChannel = 9 AND h.sourceChoice = 2) " +

@@ -262,6 +262,10 @@
     <string name="power_saving_pct">%1$d%%</string>
     <string name="power_saving_hrv_pause">Sospendi acquisizione HRV</string>
     <string name="power_saving_hrv_pause_desc">Quando la batteria della fascia è scarica, interrompe il flusso HRV sempre attivo in background, il maggiore consumo continuo della fascia. La schermata In diretta mostra comunque la frequenza cardiaca, e il flusso si riattiva automaticamente quando la fascia è carica.</string>
+    <string name="phone_battery_protect_title">Batteria del telefono</string>
+    <string name="phone_battery_protect_blurb">Impedisce a NOOP di scaricare il telefono durante la notte.</string>
+    <string name="phone_battery_protect">Proteggi la batteria del telefono</string>
+    <string name="phone_battery_protect_desc" formatted="false">Quando il telefono non è in carica ed è in Risparmio energetico o al 20% o meno, lo streaming della frequenza cardiaca in tempo reale dalla fascia viene messo in pausa. La fascia continua a registrare e la sincronizzazione successiva colma il vuoto. Una schermata Live mostra comunque la frequenza cardiaca. Lo streaming riprende quando colleghi il caricatore, esci dal Risparmio energetico o arrivi al 25%.</string>
     <string name="l10n_add_device_wizard_0123456789abcdef0123456789abcdef_b1775a78">0123456789abcdef0123456789abcdef</string>
     <string name="l10n_add_device_wizard_a_whoop_strap_bonds_to_a_d39bdf4a">Una fascia WHOOP si abbina a un solo dispositivo. Mentre è collegata a NOOP non trasmetterà to the official WHOOP app, and the other way round. It\'s reversible: pair it in the other app whenever you want it back.</string>
     <string name="l10n_add_device_wizard_add_61cc55aa">Aggiungi</string>
