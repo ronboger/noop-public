@@ -2162,6 +2162,78 @@ class WhoopBleClient(
             return overnightWindowContains(minuteOfDay, startMin, endMin)
         }
 
+        // MARK: Sleep-aware overnight capture
+        //
+        // "Overnight only" used to be a fixed clock window, which streams (and wakes the phone ~1 Hz) while
+        // the wearer is still up at 22:30 and stops at 07:00 even on a late morning. Instead, inside a WIDER
+        // outer limit, the stream follows the wearer's actual sleep: the 15-minute history offload keeps
+        // banking 1 Hz HR even while the realtime stream is off, so the last few minutes of STORED HR say
+        // whether they are asleep. HR rather than motion because a WHOOP 4.0's gravity stream can be sparse
+        // or clumped (SleepStager.isGravitySparse), while its history HR is dense. Fail-safe: no baseline or
+        // no recent HR => UNKNOWN => the plain clock window, i.e. exactly the pre-change behaviour.
+
+        /** Minutes the outer limit opens BEFORE the quiet-hours start (22:00 -> 20:00). */
+        const val SLEEP_GATE_EARLY_MIN = 120
+        /** Minutes the outer limit closes AFTER the quiet-hours end (07:00 -> 11:00). */
+        const val SLEEP_GATE_LATE_MIN = 240
+        /** Stored-HR lookback the decision reads. */
+        const val SLEEP_GATE_LOOKBACK_S = 20L * 60L
+        /** Minimum HR rows in the lookback (half of a 1 Hz 20-minute span) before deciding. */
+        const val SLEEP_GATE_MIN_SAMPLES = 600
+        /** The newest stored HR row must be at most this old, or the reading is stale => UNKNOWN. The
+         *  offload runs every 15 min, so 30 min tolerates one missed offload. */
+        const val SLEEP_GATE_MAX_STALENESS_S = 30L * 60L
+        /** How often the keep-alive tick re-reads the store inside the outer limit. */
+        const val SLEEP_GATE_EVAL_MS = 5L * 60_000L
+        /** Extra bpm above the asleep ceiling before an ASLEEP wearer is called AWAKE (hysteresis, so a
+         *  REM heart-rate surge or a turn-over does not drop the stream mid-night). */
+        const val SLEEP_GATE_WAKE_MARGIN_BPM = 10.0
+
+        enum class SleepGate { ASLEEP, AWAKE, UNKNOWN }
+
+        /** The median-HR ceiling under which the wearer reads as asleep: resting HR plus 20% (at least
+         *  8 bpm). Resting HR here is noop's nightly floor, so typical sleeping HR sits just above it. */
+        fun sleepCeilingBpm(restingHr: Double): Double = restingHr + maxOf(8.0, restingHr * 0.2)
+
+        /** The outer limit `[quietStart - EARLY, quietEnd + LATE)` as wrap-aware minutes of day. */
+        fun sleepGateOuterWindow(startMin: Int, endMin: Int): Pair<Int, Int> =
+            Math.floorMod(startMin - SLEEP_GATE_EARLY_MIN, 1440) to Math.floorMod(endMin + SLEEP_GATE_LATE_MIN, 1440)
+
+        /**
+         * Decide asleep/awake from the stored HR of the last [SLEEP_GATE_LOOKBACK_S]. [bpms] are that
+         * window's rows, [newestAgeS] how old the newest one is. [wasAsleep] applies the wake hysteresis.
+         */
+        fun sleepGateFrom(bpms: List<Int>, newestAgeS: Long, restingHr: Double?, wasAsleep: Boolean): SleepGate {
+            if (restingHr == null || restingHr < 30.0 || restingHr > 100.0) return SleepGate.UNKNOWN
+            val valid = bpms.filter { it in 25..220 }
+            if (valid.size < SLEEP_GATE_MIN_SAMPLES || newestAgeS > SLEEP_GATE_MAX_STALENESS_S) return SleepGate.UNKNOWN
+            val sorted = valid.sorted()
+            val median = if (sorted.size % 2 == 1) sorted[sorted.size / 2].toDouble()
+                else (sorted[sorted.size / 2 - 1] + sorted[sorted.size / 2]) / 2.0
+            val ceiling = sleepCeilingBpm(restingHr)
+            return if (wasAsleep) {
+                if (median >= ceiling + SLEEP_GATE_WAKE_MARGIN_BPM) SleepGate.AWAKE else SleepGate.ASLEEP
+            } else {
+                if (median <= ceiling) SleepGate.ASLEEP else SleepGate.AWAKE
+            }
+        }
+
+        /** Overnight-only capture with the sleep gate: asleep streams anywhere inside the OUTER limit,
+         *  awake never streams, unknown falls back to the plain quiet-hours window. */
+        fun sleepAwareCaptureWanted(inOuter: Boolean, inCore: Boolean, gate: SleepGate): Boolean = when (gate) {
+            SleepGate.ASLEEP -> inOuter
+            SleepGate.AWAKE -> false
+            SleepGate.UNKNOWN -> inCore
+        }
+
+        /** Median of the recent nightly resting-HR values (newest [take] non-null), or null when fewer
+         *  than 3 nights exist — too little to anchor a ceiling. */
+        fun restingHrBaseline(nightly: List<Int?>, take: Int = 14): Double? {
+            val v = nightly.filterNotNull().filter { it in 30..100 }.takeLast(take).sorted()
+            if (v.size < 3) return null
+            return if (v.size % 2 == 1) v[v.size / 2].toDouble() else (v[v.size / 2 - 1] + v[v.size / 2]) / 2.0
+        }
+
         // MARK: Phone-battery protect
         //
         // Measured on a Pixel 10: with Continuous HRV capture on, the strap's ~1 Hz BLE notifications woke
@@ -2600,6 +2672,15 @@ class WhoopBleClient(
     @Volatile private var phoneLowLatch = false
     /** Cached [phoneProtectActive] result, so the receiver acts only on an edge. */
     @Volatile private var phoneProtectEngaged = false
+
+    // Sleep-aware overnight capture: the latest gate verdict (read on the main thread by
+    // continuousCaptureWantsNow, written by the IO evaluation), when it was last evaluated, a single-flight
+    // guard, and the cached resting-HR baseline (refreshed at most every 6 h).
+    @Volatile private var sleepGate = SleepGate.UNKNOWN
+    @Volatile private var lastSleepGateEvalMs = 0L
+    private val sleepGateEvalRunning = java.util.concurrent.atomic.AtomicBoolean(false)
+    @Volatile private var restingHrCache: Double? = null
+    @Volatile private var restingHrCacheAtMs = 0L
     /** Desired 0x2A37 CCCD state (true = notifications OFF). [drainCccdQueue] reads it at write time,
      *  so every subscribe path — connect, keep-alive resubscribe, this lever — writes the current want. */
     @Volatile private var standardHrWantOff = false
@@ -9315,11 +9396,12 @@ class WhoopBleClient(
                 // edge; Android never arms the R10/R11 flood, so the toggle is the whole stop). A
                 // window-open tick re-arms on the false→true edge. Runs for BOTH families: send() routes
                 // the 5/MG toggle with puffin framing. Mirrors the iOS keep-alive re-derivation.
+                maybeEvaluateSleepGate()
                 val captureWantNow = screenWantsRealtime || continuousCaptureWantsNow()
                 if (wantsRealtime != captureWantNow && keepStreamForData && !screenWantsRealtime) {
                     log(
-                        if (captureWantNow) "Continuous HRV: overnight window opened; arming the realtime stream (#927)"
-                        else "Continuous HRV: overnight window closed; realtime stream disarmed until tonight (#927)",
+                        if (captureWantNow) "Continuous HRV: overnight capture wanted (gate=$sleepGate); arming the realtime stream (#927)"
+                        else "Continuous HRV: overnight capture not wanted (gate=$sleepGate); realtime stream disarmed (#927)",
                     )
                 }
                 reconcileRealtime()   // recomputes wantsRealtime from the fresh predicate; toggles only on an edge
@@ -9487,15 +9569,68 @@ class WhoopBleClient(
             val (batteryPct, charging) = batteryPctAndCharging()
             if (idleThrottleActive(batteryPct, charging, pauseCaptureBatteryPct)) return false
         }
+        if (!NoopPrefs.continuousHrvOvernight(context)) return true
+        val (minuteOfDay, startMin, endMin) = overnightClock()
+        val inCore = overnightWindowContains(minuteOfDay, startMin, endMin)
+        val (outerStart, outerEnd) = sleepGateOuterWindow(startMin, endMin)
+        val inOuter = overnightWindowContains(minuteOfDay, outerStart, outerEnd)
+        return sleepAwareCaptureWanted(inOuter, inCore, sleepGate)
+    }
+
+    /** Local minute of day plus the quiet-hours start/end the overnight window reuses. */
+    private fun overnightClock(): Triple<Int, Int, Int> {
         val cal = java.util.Calendar.getInstance()
-        val minuteOfDay = cal.get(java.util.Calendar.HOUR_OF_DAY) * 60 + cal.get(java.util.Calendar.MINUTE)
-        return continuousHrvStreamWanted(
-            continuousHrv = true,
-            overnightOnly = NoopPrefs.continuousHrvOvernight(context),
-            minuteOfDay = minuteOfDay,
-            startMin = NotifPrefs.getInt(context, NotifPrefs.QUIET_START, 22 * 60),
-            endMin = NotifPrefs.getInt(context, NotifPrefs.QUIET_END, 7 * 60),
+        return Triple(
+            cal.get(java.util.Calendar.HOUR_OF_DAY) * 60 + cal.get(java.util.Calendar.MINUTE),
+            NotifPrefs.getInt(context, NotifPrefs.QUIET_START, 22 * 60),
+            NotifPrefs.getInt(context, NotifPrefs.QUIET_END, 7 * 60),
         )
+    }
+
+    /**
+     * Keep the sleep gate fresh while overnight-only capture could want the stream. Called from the
+     * keep-alive tick. Outside the outer limit the verdict resets to UNKNOWN so each night starts clean.
+     * Inside it, at most every [SLEEP_GATE_EVAL_MS], read the last 20 min of stored HR on IO (one indexed
+     * range read of ~1200 rows), update the verdict, and re-run the reconciler on an edge.
+     */
+    private fun maybeEvaluateSleepGate() {
+        if (!keepStreamForData || !NoopPrefs.continuousHrvOvernight(context)) return
+        val (minuteOfDay, startMin, endMin) = overnightClock()
+        val (outerStart, outerEnd) = sleepGateOuterWindow(startMin, endMin)
+        if (!overnightWindowContains(minuteOfDay, outerStart, outerEnd)) {
+            sleepGate = SleepGate.UNKNOWN
+            return
+        }
+        val now = System.currentTimeMillis()
+        if (now - lastSleepGateEvalMs < SLEEP_GATE_EVAL_MS) return
+        if (!sleepGateEvalRunning.compareAndSet(false, true)) return
+        lastSleepGateEvalMs = now
+        val readId = deviceId
+        ioScope.launch {
+            try {
+                val nowS = System.currentTimeMillis() / 1000L
+                if (restingHrCache == null || System.currentTimeMillis() - restingHrCacheAtMs > 6 * 3_600_000L) {
+                    val nightly = repository.days("$readId-noop").map { it.restingHr }
+                    restingHrCache = restingHrBaseline(nightly) ?: restingHrBaseline(repository.days(readId).map { it.restingHr })
+                    restingHrCacheAtMs = System.currentTimeMillis()
+                }
+                val rows = repository.hrSamplesForDevice(readId, nowS - SLEEP_GATE_LOOKBACK_S, nowS, 5_000)
+                val newestAge = rows.maxOfOrNull { it.ts }?.let { nowS - it } ?: Long.MAX_VALUE
+                val was = sleepGate
+                val next = sleepGateFrom(rows.map { it.bpm }, newestAge, restingHrCache, was == SleepGate.ASLEEP)
+                sleepGate = next
+                if (next != was) {
+                    handler.post {
+                        log("Continuous HRV: sleep gate $was -> $next (rows=${rows.size}, restingHr=${restingHrCache?.toInt()})")
+                        reconcileRealtime()
+                    }
+                }
+            } catch (t: Throwable) {
+                if (t is kotlinx.coroutines.CancellationException) throw t
+            } finally {
+                sleepGateEvalRunning.set(false)
+            }
+        }
     }
 
     /**
