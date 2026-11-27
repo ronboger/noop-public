@@ -104,4 +104,49 @@ class RawRetentionDbTest {
         assertEquals(false, report.finished)
         assertEquals(1L, count("hrSample"))
     }
+
+    @Test
+    fun `switching retention off stops a pass before it deletes`() = runBlocking {
+        sql("INSERT INTO hrSample(deviceId, ts, bpm, synced) VALUES ('$id', ${now - 100 * day}, 70, 0)")
+        val report = RawRetention.run(db, nowSec = now, deadlineMillis = Long.MAX_VALUE, keepGoing = { false })
+        assertEquals(false, report.finished)
+        assertEquals(1L, count("hrSample"))
+    }
+
+    @Test
+    fun `a nearly full disk stops a pass`() = runBlocking {
+        sql("INSERT INTO hrSample(deviceId, ts, bpm, synced) VALUES ('$id', ${now - 100 * day}, 70, 0)")
+        val report = RawRetention.run(db, nowSec = now, deadlineMillis = Long.MAX_VALUE, freeDiskBytes = { 0L })
+        assertEquals(false, report.finished)
+        assertEquals(1L, count("hrSample"))
+    }
+
+    @Test
+    fun `an interrupted pass keeps its progress and the boundary only covers rolled-up minutes`() = runBlocking {
+        val old = now - 100 * day
+        for (d in 0 until 5) sql("INSERT INTO hrSample(deviceId, ts, bpm, synced) VALUES ('$id', ${old + d * day}, 70, 0)")
+        var steps = 0
+        // Stop after a few checks: some steps done, the rest left for the next run.
+        val first = RawRetention.run(db, nowSec = now, deadlineMillis = Long.MAX_VALUE, keepGoing = { steps++ < 12 })
+        assertEquals(false, first.finished)
+        val boundary = dao.rawArchivedBefore(id)!!
+        // Every deleted second is below the boundary and has its minute.
+        assertEquals(0L, count("hrSample", "deviceId = '$id' AND ts < $boundary"))
+        for (d in 0 until 5) {
+            val t = old + d * day
+            if (t < boundary) assertEquals(1, dao.hrMinuteBuckets(id, t - t % 60, t - t % 60, 60).size)
+        }
+        assertTrue(RawRetention.run(db, nowSec = now, deadlineMillis = Long.MAX_VALUE).finished)
+        assertEquals(0L, count("hrSample", "deviceId = '$id'"))
+        assertEquals(RawRetention.cutoff(now), dao.rawArchivedBefore(id))
+    }
+
+    @Test
+    fun `a wider window later never moves the boundary back`() = runBlocking {
+        sql("INSERT INTO hrSample(deviceId, ts, bpm, synced) VALUES ('$id', ${now - 70 * day}, 70, 0)")
+        RawRetention.run(db, nowSec = now, deadlineMillis = Long.MAX_VALUE, windowDays = 60)
+        val b60 = dao.rawArchivedBefore(id)!!
+        RawRetention.run(db, nowSec = now, deadlineMillis = Long.MAX_VALUE, windowDays = 90)
+        assertEquals(b60, dao.rawArchivedBefore(id))
+    }
 }

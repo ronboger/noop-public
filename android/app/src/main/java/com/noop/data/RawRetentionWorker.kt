@@ -27,12 +27,22 @@ class RawRetentionWorker(
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
-        // Opt-in: deleting raw rows cannot be undone, and a store this size is past the 2 GiB restore limit
-        // of a backup, so a backup is not a usable copy of what would go. The wearer turns it on.
+        // On by default, with a Settings switch to turn it off. Deleting raw rows cannot be undone.
         if (!RawRetentionPrefs.enabled(applicationContext)) return Result.success()
         val db = WhoopDatabase.get(applicationContext)
         val deadline = System.currentTimeMillis() + RUN_BUDGET_MS
-        val report = runCatching { RawRetention.run(db, deadlineMillis = deadline) }
+        val report = runCatching {
+            val ctx = applicationContext
+            val window = RawRetentionPrefs.windowDays(ctx)
+            val dir = ctx.getDatabasePath(WhoopDatabase.DB_NAME).parent
+            RawRetention.run(
+                db, deadlineMillis = deadline, windowDays = window,
+                // Re-read before every batch: switching retention off, or changing the window, stops a pass
+                // that is already running instead of letting it finish under the old choice.
+                keepGoing = { RawRetentionPrefs.enabled(ctx) && RawRetentionPrefs.windowDays(ctx) == window },
+                freeDiskBytes = { runCatching { StatFs(dir).availableBytes }.getOrDefault(Long.MAX_VALUE) },
+            )
+        }
             .onFailure { if (it is kotlin.coroutines.cancellation.CancellationException) throw it }
             .getOrElse { Log.w(TAG, "retention pass failed", it); return Result.success() }
         val reclaimNote = if (report.finished) runCatching { reclaim(applicationContext, db) }
@@ -66,16 +76,19 @@ class RawRetentionWorker(
                 WorkManager.getInstance(context.applicationContext)
                     .enqueueUniquePeriodicWork(PERIODIC, ExistingPeriodicWorkPolicy.KEEP, request)
             }
+            // A catch-up at the next charge too, so an install that already has years of raw rows does not
+            // wait for the period. KEEP: a launch never restarts one that is already queued.
+            if (RawRetentionPrefs.enabled(context)) enqueueCatchUp(context, ExistingWorkPolicy.KEEP)
         }
 
-        internal fun enqueueCatchUp(context: Context) {
+        internal fun enqueueCatchUp(context: Context, policy: ExistingWorkPolicy = ExistingWorkPolicy.REPLACE) {
             val request = OneTimeWorkRequestBuilder<RawRetentionWorker>()
                 .setConstraints(CONSTRAINTS)
                 .setInitialDelay(30, TimeUnit.SECONDS)
                 .build()
             runCatching {
                 WorkManager.getInstance(context.applicationContext)
-                    .enqueueUniqueWork(CATCH_UP, ExistingWorkPolicy.REPLACE, request)
+                    .enqueueUniqueWork(CATCH_UP, policy, request)
             }
         }
 
@@ -111,17 +124,35 @@ class RawRetentionWorker(
     }
 }
 
-/** The wearer's opt-in for [RawRetention]. Off by default. */
+/** The wearer's choice for [RawRetention]. On by default, with a [DEFAULT_WINDOW_DAYS]-day window. */
 object RawRetentionPrefs {
     private const val FILE = "noop_raw_retention"
     private const val KEY_ENABLED = "enabled"
+    private const val KEY_WINDOW_DAYS = "windowDays"
 
-    fun enabled(context: Context): Boolean =
-        context.getSharedPreferences(FILE, Context.MODE_PRIVATE).getBoolean(KEY_ENABLED, false)
+    /** The windows offered. Nothing shorter than 60: the hourly stress bank re-reads 32 days and the
+     *  Health Connect export 60, and both would lose data under a shorter window. */
+    val WINDOW_CHOICES = listOf(60, 90)
+    const val DEFAULT_WINDOW_DAYS = 60
+
+    private fun prefs(context: Context) = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+
+    fun enabled(context: Context): Boolean = prefs(context).getBoolean(KEY_ENABLED, true)
+
+    fun windowDays(context: Context): Int =
+        prefs(context).getInt(KEY_WINDOW_DAYS, DEFAULT_WINDOW_DAYS).takeIf { it in WINDOW_CHOICES }
+            ?: DEFAULT_WINDOW_DAYS
 
     /** Turning it on starts the catch-up at the next charge instead of waiting up to six hours. */
     fun setEnabled(context: Context, on: Boolean) {
-        context.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit().putBoolean(KEY_ENABLED, on).apply()
+        prefs(context).edit().putBoolean(KEY_ENABLED, on).apply()
         if (on) RawRetentionWorker.enqueueCatchUp(context)
+    }
+
+    /** A shorter window takes effect at the next charge. A longer one cannot bring deleted rows back. */
+    fun setWindowDays(context: Context, days: Int) {
+        require(days in WINDOW_CHOICES)
+        prefs(context).edit().putInt(KEY_WINDOW_DAYS, days).apply()
+        if (enabled(context)) RawRetentionWorker.enqueueCatchUp(context)
     }
 }

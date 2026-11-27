@@ -3337,23 +3337,53 @@ fun SettingsScreen(
         }
 
         // --- Storage: raw-stream retention (v45) ---
-        // Opt-in, because the delete cannot be undone. See com.noop.data.RawRetention for the policy.
+        // See com.noop.data.RawRetention for what ages out. Android's SQLite creates the store with
+        // auto_vacuum = FULL, so the file gives the space back by itself as the rows go.
         val retentionContext = LocalContext.current
         var rawRetentionOn by remember { mutableStateOf(com.noop.data.RawRetentionPrefs.enabled(retentionContext)) }
+        var rawWindowDays by remember { mutableStateOf(com.noop.data.RawRetentionPrefs.windowDays(retentionContext)) }
+        var dbBytes by remember { mutableStateOf<Long?>(null) }
+        LaunchedEffect(Unit) {
+            dbBytes = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                val f = retentionContext.getDatabasePath(com.noop.data.WhoopDatabase.DB_NAME)
+                listOf("", "-wal", "-shm").sumOf { java.io.File(f.path + it).length() }
+            }
+        }
         SettingsCard(
             icon = Icons.Filled.Storage,
             title = "Storage",
             blurb = "Raw sensor data is the largest thing NOOP stores, about 50 MB a day. Your scores, sleep, workouts and journal are always kept.",
         ) {
-            SettingsToggleRow(
-                title = "Delete raw sensor data after 90 days",
-                detail = "Keeps your heart rate at one-minute detail. Older days lose second-by-second charts, HRV, temperature and motion tracks, and sleep re-staging. Runs while charging. Cannot be undone.",
-                checked = rawRetentionOn,
-                onCheckedChange = {
-                    rawRetentionOn = it
-                    com.noop.data.RawRetentionPrefs.setEnabled(retentionContext, it)
-                },
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                SettingsToggleRow(
+                    title = "Delete old raw sensor data",
+                    detail = "Keeps your heart rate at one-minute detail. Older days lose second-by-second charts, HRV, temperature and motion tracks, and sleep re-staging. Runs while charging. Cannot be undone.",
+                    checked = rawRetentionOn,
+                    onCheckedChange = {
+                        rawRetentionOn = it
+                        com.noop.data.RawRetentionPrefs.setEnabled(retentionContext, it)
+                    },
+                )
+                if (rawRetentionOn) {
+                    Text("Keep raw data for", style = NoopType.body, color = Palette.textPrimary)
+                    SegmentedPillControl(
+                        items = com.noop.data.RawRetentionPrefs.WINDOW_CHOICES,
+                        selection = rawWindowDays,
+                        label = { "$it days" },
+                        onSelect = { days ->
+                            rawWindowDays = days
+                            com.noop.data.RawRetentionPrefs.setWindowDays(retentionContext, days)
+                        },
+                        adaptsToAvailableWidth = true,
+                    )
+                }
+                dbBytes?.let { bytes ->
+                    Text(
+                        String.format(java.util.Locale.US, "Database now: %.1f GB. It shrinks by itself as old data is deleted.", bytes / 1e9),
+                        style = NoopType.footnote, color = Palette.textSecondary,
+                    )
+                }
+            }
         }
 
         // --- About ---

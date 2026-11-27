@@ -38,9 +38,13 @@ object RawRetention {
         "sleepStateSample", "whoop4ResearchSample", "whoop4RrPacket",
     )
 
-    /** The archive cutoff for [nowSec]: [RAW_WINDOW_DAYS] back, floored to a minute. */
+    /** Days kept beyond the chosen window, so a reader with exactly that look-back (Health Connect's 60-day
+     *  floor) never sees the edge being deleted under it. */
+    const val MARGIN_DAYS = 2
+
+    /** The archive cutoff for [nowSec]: [windowDays] plus [MARGIN_DAYS] back, floored to a minute. */
     fun cutoff(nowSec: Long, windowDays: Int = RAW_WINDOW_DAYS): Long =
-        floorMinute(nowSec - windowDays * DAY_SECONDS)
+        floorMinute(nowSec - (windowDays + MARGIN_DAYS) * DAY_SECONDS)
 
     fun floorMinute(ts: Long): Long = Math.floorDiv(ts, 60L) * 60L
 
@@ -103,55 +107,67 @@ object RawRetention {
     )
 
     /**
-     * One bounded pass: for each eligible device, roll HR up to the cutoff, publish the boundary, then
-     * delete the expired raw rows in short batches. Stops at [deadlineMillis] (wall clock, ms) with
-     * `finished = false`; the next run resumes where this one stopped, because every step is idempotent.
+     * One bounded pass. For each eligible device it walks forward from the oldest raw second in
+     * [ROLLUP_CHUNK_SECONDS] steps up to the cutoff, and for each step: rolls that step's HR into minutes,
+     * moves the boundary to the step's end (so readers switch to the minutes exactly where they now exist),
+     * deletes every pruned table's rows below it, and checkpoints. So every run frees space and makes
+     * progress, and a run cut short resumes at the oldest row still left.
+     *
+     * Stops (with `finished = false`) at [deadlineMillis], as soon as [keepGoing] turns false (the wearer
+     * switched retention off or changed the window), or when free disk falls under [minFreeDiskBytes]:
+     * deletes write WAL and trigger rows before space comes back, so a nearly full phone stops early.
      */
     suspend fun run(
         db: WhoopDatabase,
         nowSec: Long = System.currentTimeMillis() / 1000L,
         deadlineMillis: Long,
         windowDays: Int = RAW_WINDOW_DAYS,
+        keepGoing: () -> Boolean = { true },
+        freeDiskBytes: () -> Long = { Long.MAX_VALUE },
+        minFreeDiskBytes: Long = MIN_FREE_DISK_BYTES,
     ): Report = withContext(Dispatchers.IO) {
         val dao = db.whoopDao()
+        val sql = db.openHelper.writableDatabase
         val cutoff = cutoff(nowSec, windowDays)
         val ids = dao.rawRetentionDeviceIds().distinct()
         var deleted = 0L
+        val stop = { System.currentTimeMillis() >= deadlineMillis || !keepGoing() || freeDiskBytes() < minFreeDiskBytes }
         var finished = true
-        for (id in ids) {
-            if (System.currentTimeMillis() >= deadlineMillis) { finished = false; break }
-            // 1. Minute HR for everything below the cutoff, in short chunks from the oldest second.
-            val oldest = dao.oldestHrTs(id)
-            if (oldest != null && oldest < cutoff) {
-                var from = floorMinute(oldest)
-                while (from < cutoff) {
-                    if (System.currentTimeMillis() >= deadlineMillis) { finished = false; break }
-                    val to = minOf(from + ROLLUP_CHUNK_SECONDS, cutoff)
-                    dao.rollupHrMinutes(id, from, to)
-                    from = to
-                    yield()
+        devices@ for (id in ids) {
+            val previous = dao.rawArchivedBefore(id) ?: Long.MIN_VALUE
+            val oldestHr = dao.oldestHrTs(id)
+            var from = if (oldestHr != null && oldestHr < cutoff) floorMinute(oldestHr) else cutoff
+            // One last step to the cutoff itself covers the other tables' rows when there is no HR left.
+            while (true) {
+                if (stop()) { finished = false; break@devices }
+                val to = minOf(from + ROLLUP_CHUNK_SECONDS, cutoff)
+                if (from < to) dao.rollupHrMinutes(id, from, to)
+                // Monotonic: a wider window later never moves the boundary back over deleted rows.
+                if (previous < to && (dao.rawArchivedBefore(id) ?: Long.MIN_VALUE) < to) {
+                    dao.upsertRawRetention(RawRetentionRow(id, to))
                 }
-                if (!finished) break
+                val result = deleteBelow(sql, id, to, stop)
+                deleted += result.first
+                if (!result.second) { finished = false; break@devices }
+                runCatching { sql.query("PRAGMA wal_checkpoint(PASSIVE)").use { it.moveToFirst() } }
+                yield()
+                if (to >= cutoff) break
+                from = to
             }
-            // 2. The boundary moves only after its minutes exist, so a reader never sees a gap.
-            val previous = dao.rawArchivedBefore(id)
-            if (previous == null || previous < cutoff) dao.upsertRawRetention(RawRetentionRow(id, cutoff))
-            // 3. The deletes, oldest first, a short transaction per batch.
-            val boundary = maxOf(previous ?: cutoff, cutoff)
-            val result = deleteBelow(db.openHelper.writableDatabase, id, boundary, deadlineMillis)
-            deleted += result.first
-            if (!result.second) { finished = false; break }
         }
         if (deleted > 0) db.invalidationTracker.refreshVersionsAsync()
         Report(devices = ids.size, deleted = deleted, finished = finished)
     }
+
+    /** Below this much free disk a run stops: deletes need WAL and journal space before space returns. */
+    const val MIN_FREE_DISK_BYTES = 300L shl 20
 
     /** Delete every pruned-table row of [deviceId] below [boundary]. Returns (rows, finished). */
     private suspend fun deleteBelow(
         sql: SupportSQLiteDatabase,
         deviceId: String,
         boundary: Long,
-        deadlineMillis: Long,
+        stop: () -> Boolean,
     ): Pair<Long, Boolean> {
         var total = 0L
         var batch = 1_000
@@ -164,7 +180,7 @@ object RawRetention {
             )
             try {
                 while (true) {
-                    if (System.currentTimeMillis() >= deadlineMillis) return total to false
+                    if (stop()) return total to false
                     val start = System.nanoTime()
                     stmt.clearBindings()
                     stmt.bindString(1, deviceId)

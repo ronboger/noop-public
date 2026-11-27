@@ -8,9 +8,10 @@ import org.junit.Test
 class RawRetentionTest {
 
     @Test
-    fun `cutoff is the window back, floored to a minute`() {
+    fun `cutoff is the window plus margin back, floored to a minute`() {
         val now = 1_800_000_037L
-        assertEquals(RawRetention.floorMinute(now - 90L * 86_400L), RawRetention.cutoff(now))
+        assertEquals(RawRetention.floorMinute(now - 92L * 86_400L), RawRetention.cutoff(now))
+        assertEquals(RawRetention.floorMinute(now - 62L * 86_400L), RawRetention.cutoff(now, 60))
         assertEquals(0L, RawRetention.cutoff(now) % 60L)
     }
 
@@ -33,7 +34,7 @@ class RawRetentionTest {
     fun `a full-history pass never reaches the archive`() {
         val now = 1_800_000_000L
         val days = RawRetention.clampAnalysisDays(4000, RawRetention.cutoff(now), now)
-        assertEquals(RawRetention.RAW_WINDOW_DAYS - 2, days)
+        assertEquals(RawRetention.RAW_WINDOW_DAYS + RawRetention.MARGIN_DAYS - 2, days)
         assertEquals(1, RawRetention.clampAnalysisDays(4000, now, now))
     }
 
@@ -54,6 +55,12 @@ class RawRetentionTest {
         assertEquals(1_000, RawRetention.nextBatchSize(1_000, 100))
         assertEquals(RawRetention.MAX_BATCH, RawRetention.nextBatchSize(RawRetention.MAX_BATCH, 1))
         assertEquals(RawRetention.MIN_BATCH, RawRetention.nextBatchSize(RawRetention.MIN_BATCH, 10_000))
+    }
+
+    @Test
+    fun `no window shorter than the 60-day readers is offered`() {
+        assertTrue(RawRetentionPrefs.WINDOW_CHOICES.all { it >= 60 })
+        assertTrue(RawRetentionPrefs.DEFAULT_WINDOW_DAYS in RawRetentionPrefs.WINDOW_CHOICES)
     }
 
     @Test
