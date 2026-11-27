@@ -1321,9 +1321,28 @@ class WhoopRepository(
             .map { V18AuxCodec.unpack(it.fields, it.ts) }
 
 
+    /** The newest raw-retention boundary over every device (v45), or null when nothing is archived. */
+    suspend fun maxRawArchivedBefore(): Long? = dao.maxRawArchivedBefore()
+
     /** Downsampled HR (mean bpm per [bucketSeconds]) for the strap, for the Today 24h trend chart. */
     suspend fun hrBucketsForDevice(deviceId: String, from: Long, to: Long, bucketSeconds: Long = 300L) =
-        dao.hrBuckets(deviceId, from, to, bucketSeconds)
+        hrBucketsWithArchive(deviceId, from, to, bucketSeconds)
+
+    /**
+     * [WhoopDao.hrBuckets] across the raw-retention boundary (v45): raw seconds at or after the device's
+     * [RawRetentionRow.archivedBefore], minute HR before it, at a whole-minute resolution. With no
+     * boundary (nothing archived yet) this is the plain raw read.
+     */
+    private suspend fun hrBucketsWithArchive(deviceId: String, from: Long, to: Long, bucketSeconds: Long):
+        List<HrBucket> {
+        val boundary = dao.rawArchivedBefore(deviceId)
+        if (boundary == null || from >= boundary) return dao.hrBuckets(deviceId, from, to, bucketSeconds)
+        val archived = dao.hrMinuteBuckets(
+            deviceId, from, minOf(to, boundary - 1), RawRetention.archivedBucketSeconds(bucketSeconds),
+        )
+        val raw = if (to >= boundary) dao.hrBuckets(deviceId, boundary, to, bucketSeconds) else emptyList()
+        return RawRetention.joinBuckets(archived, raw)
+    }
 
     /** #856: the same dedup over an EXPLICIT id list, so a workout can read its OWN recording strap
      *  rather than the day-level active ∪ canonical. Order is precedence — earlier ids win per bucket
@@ -1331,7 +1350,7 @@ class WhoopRepository(
     suspend fun hrBucketsFor(deviceIds: List<String>, from: Long, to: Long, bucketSeconds: Long = 300L):
         List<HrBucket> =
         if (deviceIds.isEmpty()) emptyList()
-        else mergeHrBucketsByStart(deviceIds.map { dao.hrBuckets(it, from, to, bucketSeconds) })
+        else mergeHrBucketsByStart(deviceIds.map { hrBucketsWithArchive(it, from, to, bucketSeconds) })
 
     /**
      * Downsampled HR buckets over every registered WHOOP (active first, archived included, canonical
@@ -1340,7 +1359,7 @@ class WhoopRepository(
      */
     suspend fun hrBucketsUnion(activeDeviceId: String, from: Long, to: Long, bucketSeconds: Long = 300L):
         List<HrBucket> = mergeHrBucketsByStart(
-            rawWhoopSourceIds(activeDeviceId).map { dao.hrBuckets(it, from, to, bucketSeconds) },
+            rawWhoopSourceIds(activeDeviceId).map { hrBucketsWithArchive(it, from, to, bucketSeconds) },
         )
 
     /**

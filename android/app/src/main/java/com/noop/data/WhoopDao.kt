@@ -1683,4 +1683,58 @@ interface WhoopDao : DeviceRegistryDao {
         clearCoachMessages()
         if (rows.isNotEmpty()) insertCoachMessagesRaw(rows)
     }
+
+    // MARK: - Raw-stream retention (v45)
+
+    /** The archive boundary for [deviceId], or null when nothing of it is archived. See [RawRetentionRow]. */
+    @Query("SELECT archivedBefore FROM rawRetention WHERE deviceId = :deviceId")
+    suspend fun rawArchivedBefore(deviceId: String): Long?
+
+    /** The newest boundary over every device, or null when nothing is archived. */
+    @Query("SELECT MAX(archivedBefore) FROM rawRetention")
+    suspend fun maxRawArchivedBefore(): Long?
+
+    @Upsert
+    suspend fun upsertRawRetention(row: RawRetentionRow)
+
+    /** The ids whose raw rows age out: paired straps and rings, and the canonical "my-whoop". NOT the
+     *  `device` table, because every importer registers its own id there; imported rows are never pruned. */
+    @Query("SELECT id FROM pairedDevice UNION SELECT 'my-whoop'")
+    suspend fun rawRetentionDeviceIds(): List<String>
+
+    /** Oldest measured or PPG-derived HR second for [deviceId], or null when there is none. */
+    @Query(
+        "SELECT MIN(t) FROM (SELECT MIN(ts) AS t FROM hrSample WHERE deviceId = :deviceId " +
+            "UNION ALL SELECT MIN(ts) AS t FROM ppgHrSample WHERE deviceId = :deviceId)"
+    )
+    suspend fun oldestHrTs(deviceId: String): Long?
+
+    /**
+     * Fold [from, to) of the measured-first HR stream into [HrMinuteRow]s — the SAME union [hrBuckets]
+     * reads, so a minute holds what a raw chart of it would have shown. INSERT OR IGNORE: a minute that is
+     * already rolled up is final. That keeps a re-run after a crash, which can see a minute whose raw rows
+     * are half deleted, from replacing a full minute with a partial one.
+     */
+    @Query(
+        "INSERT OR IGNORE INTO hrMinute (deviceId, minuteStart, sampleCount, bpmSum, minBpm, maxBpm) " +
+            "SELECT :deviceId, (ts / 60) * 60, COUNT(*), SUM(bpm), MIN(bpm), MAX(bpm) FROM (" +
+            "SELECT ts, bpm FROM hrSample WHERE deviceId = :deviceId AND ts >= :from AND ts < :to " +
+            "UNION ALL " +
+            "SELECT p.ts AS ts, p.bpm AS bpm FROM ppgHrSample p " +
+            "WHERE p.deviceId = :deviceId AND p.ts >= :from AND p.ts < :to " +
+            "AND NOT EXISTS (SELECT 1 FROM hrSample h WHERE h.deviceId = p.deviceId AND h.ts = p.ts)" +
+            ") GROUP BY ts / 60"
+    )
+    suspend fun rollupHrMinutes(deviceId: String, from: Long, to: Long)
+
+    /** [hrBuckets] over the minute rollup. [bucketSeconds] must be a multiple of 60. The mean is weighted by
+     *  each minute's sample count, so it equals the raw-sample mean of the same bucket. */
+    @Query(
+        "SELECT (minuteStart / :bucketSeconds) * :bucketSeconds AS bucket, " +
+            "CAST(SUM(bpmSum) AS REAL) / SUM(sampleCount) AS avgBpm, " +
+            "CAST(MIN(minBpm) AS REAL) AS minBpm, CAST(MAX(maxBpm) AS REAL) AS maxBpm FROM hrMinute " +
+            "WHERE deviceId = :deviceId AND minuteStart >= :from AND minuteStart <= :to " +
+            "GROUP BY minuteStart / :bucketSeconds ORDER BY bucket ASC"
+    )
+    suspend fun hrMinuteBuckets(deviceId: String, from: Long, to: Long, bucketSeconds: Long): List<HrBucket>
 }
