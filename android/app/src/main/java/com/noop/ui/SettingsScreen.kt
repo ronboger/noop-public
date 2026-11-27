@@ -3336,6 +3336,26 @@ fun SettingsScreen(
             )
         }
 
+        // --- Storage: raw-stream retention (v45) ---
+        // Opt-in, because the delete cannot be undone. See com.noop.data.RawRetention for the policy.
+        val retentionContext = LocalContext.current
+        var rawRetentionOn by remember { mutableStateOf(com.noop.data.RawRetentionPrefs.enabled(retentionContext)) }
+        SettingsCard(
+            icon = Icons.Filled.Storage,
+            title = "Storage",
+            blurb = "Raw sensor data is the largest thing NOOP stores, about 50 MB a day. Your scores, sleep, workouts and journal are always kept.",
+        ) {
+            SettingsToggleRow(
+                title = "Delete raw sensor data after 90 days",
+                detail = "Keeps your heart rate at one-minute detail. Older days lose second-by-second charts, HRV, temperature and motion tracks, and sleep re-staging. Runs while charging. Cannot be undone.",
+                checked = rawRetentionOn,
+                onCheckedChange = {
+                    rawRetentionOn = it
+                    com.noop.data.RawRetentionPrefs.setEnabled(retentionContext, it)
+                },
+            )
+        }
+
         // --- About ---
         SettingsCard(
             icon = Icons.Filled.Info,

@@ -109,6 +109,9 @@ class NoopApplication : Application() {
         // case it exists for is a strap that stopped talking. Scheduled here rather than beside a widget
         // so it does not inherit that widget's lifecycle. KEEP, so this is a no-op once scheduled.
         com.noop.notif.StaleBatteryWorker.ensureScheduled(this)
+        // v45 raw-stream retention: ages raw 1 Hz rows out after 90 days, keeping minute HR. Runs only
+        // while charging. KEEP, so this is a no-op once scheduled.
+        com.noop.data.RawRetentionWorker.ensureScheduled(this)
     }
 
     /** Process-wide Room-backed store. One instance shared by the UI and the background service. */

@@ -946,3 +946,37 @@ data class StreamRevisionRow(
     val hour: Long,
     val rev: Long,
 )
+
+/**
+ * Per-minute heart rate (v45, raw-stream retention). One row per device per UTC minute, built from the
+ * same measured-first stream [WhoopDao.hrBuckets] charts: `hrSample` wins a second, `ppgHrSample` only
+ * fills seconds the strap never reported. Kept forever, so charts over days older than the raw window
+ * still have HR at one-minute resolution after the 1 Hz rows are deleted.
+ *
+ * Stores the SUM and the COUNT, never a mean: a wider bucket is `SUM(bpmSum) / SUM(sampleCount)`, which
+ * weights each minute by its samples. Averaging minute means would over-weight sparse minutes.
+ */
+@Entity(tableName = "hrMinute", primaryKeys = ["deviceId", "minuteStart"])
+data class HrMinuteRow(
+    val deviceId: String,
+    /** UTC unix seconds of the minute start; always a multiple of 60. */
+    val minuteStart: Long,
+    val sampleCount: Int,
+    val bpmSum: Long,
+    val minBpm: Int,
+    val maxBpm: Int,
+)
+
+/**
+ * The raw-retention boundary for one device (v45). Every raw 1 Hz row of [deviceId] with `ts` below
+ * [archivedBefore] is either already deleted or about to be, and its HR is in [HrMinuteRow]. Readers use
+ * this to pick ONE representation per range: raw at or after the boundary, minute HR before it. Written
+ * BEFORE the delete starts (after the minute rows), so a crash mid-delete leaves readers on the rollup.
+ */
+@Entity(tableName = "rawRetention")
+data class RawRetentionRow(
+    @PrimaryKey
+    val deviceId: String,
+    /** UTC unix seconds; a multiple of 60. */
+    val archivedBefore: Long,
+)

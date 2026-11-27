@@ -503,6 +503,14 @@ object IntelligenceEngine {
         // #1005: time the whole pass so a re-score STORM is visible in the strap log (the trigger lines
         // record WHY each pass runs; this records how many nights and how long — the CPU cost per run).
         val reScoreStart = System.nanoTime()
+        // v45 raw retention: never score a day whose raw rows have aged out. The window write replaces the
+        // stored scores for every day in the span, so a pass reaching into the archive (the 4,000-day Effort
+        // rescore can) would overwrite real scores with ones computed from nothing. A no-op until the first
+        // boundary exists, and for the usual 21-day pass.
+        val retainedDays = com.noop.data.RawRetention.clampAnalysisDays(
+            maxDays, repo.maxRawArchivedBefore(), nowSeconds,
+        )
+        if (retainedDays < maxDays) diag("re-score: span clamped $maxDays -> $retainedDays day(s) by raw retention")
         // Serialise the whole pass so overlapping callers never run two rescores in parallel (see
         // [analyzeGate]). The heavy scoring already ran off the caller's thread via withContext above; the
         // lock is held only for this engine's own passes, never across an unrelated suspension.
@@ -526,7 +534,7 @@ object IntelligenceEngine {
                     stepsMotionCachePersisted = raw
                 }
             }
-            val (out, healed) = analyzeRecentOnCpu(repo, profile, maxDays, importedDeviceId, maxHROverride,
+            val (out, healed) = analyzeRecentOnCpu(repo, profile, retainedDays, importedDeviceId, maxHROverride,
                 nowSeconds, ownerSource, manualStepCoefficient, persistStepsCalibration, baselineEpoch,
                 recoveryEpoch, diag, useExperimentalSleepV2, useMotionAwareWake, sleepTraceSink, recoveryTraceSink,
                 stepsTraceSink, universalSink, workoutsTraceSink, hrvTraceSink, deepHrvWindow,
@@ -537,7 +545,7 @@ object IntelligenceEngine {
             // detections weren't banked yet), so its survivor can differ from the heal's. ONE bounded re-pass
             // re-scores the window against the cleaned store; its own heal then finds nothing (the duplicates
             // are gone), so this can never loop. Mirrors the Swift pendingForcedRescore re-arm.
-            else analyzeRecentOnCpu(repo, profile, maxDays, importedDeviceId, maxHROverride,
+            else analyzeRecentOnCpu(repo, profile, retainedDays, importedDeviceId, maxHROverride,
                 nowSeconds, ownerSource, manualStepCoefficient, persistStepsCalibration, baselineEpoch,
                 recoveryEpoch, diag, useExperimentalSleepV2, useMotionAwareWake, sleepTraceSink, recoveryTraceSink,
                 stepsTraceSink, universalSink, workoutsTraceSink, hrvTraceSink, deepHrvWindow,
